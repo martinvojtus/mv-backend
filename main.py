@@ -29,12 +29,12 @@ Base.metadata.create_all(bind=engine)
 
 # --- Pydantic MODELY (Pre komunikáciu) ---
 class PostCreate(BaseModel):
-    title: String
-    text: String
+    title: str
+    text: str
 
 class PostUpdate(BaseModel):
-    title: String
-    text: String
+    title: str
+    text: str
 
 class PostResponse(BaseModel):
     id: int
