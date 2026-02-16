@@ -85,9 +85,10 @@ app.add_middleware(
 )
 
 # --- ENDPOINTY ---
+# ✏️ ZMENA: Endpoint teraz podporuje stránkovanie (skip a limit)
 @app.get("/posts", response_model=List[PostResponse])
-def get_posts(db: Session = Depends(get_db)):
-    return db.query(Post).order_by(desc(Post.at)).all()
+def get_posts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    return db.query(Post).order_by(desc(Post.at)).offset(skip).limit(limit).all()
 
 @app.post("/posts")
 def create_post(post: PostCreate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
