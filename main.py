@@ -98,13 +98,33 @@ def create_post(post: PostCreate, db: Session = Depends(get_db), pwd: None = Dep
     return db_post
 
 @app.delete("/posts/{post_id}")
-def delete_post(post_id: int, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
-    post = db.query(Post).filter(Post.id == post_id).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    db.delete(post)
-    db.commit()
-    return {"message": "Deleted"}
+def delete_post(post_id: int, x_admin_password: str = Header(None)):
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # 1. KROK: Najprv zistíme, či má príspevok pripojený obrázok
+    post_response = supabase.table("posts").select("image_url").eq("id", post_id).execute()
+    
+    if post_response.data and len(post_response.data) > 0:
+        image_url = post_response.data[0].get("image_url")
+        
+        # 2. KROK: Ak obrázok existuje, zmažeme ho zo Storage
+        if image_url:
+            # Z dlhej URL adresy vysekáme len samotný názov súboru na konci
+            # napr. "https://.../images/fotka123.jpg" -> "fotka123.jpg"
+            file_name = image_url.split("/")[-1]
+            
+            try:
+                # Nezabudni upraviť "images" na presný názov tvojho bucketu v Supabase, ak sa volá inak
+                supabase.storage.from_("images").remove([file_name])
+            except Exception as e:
+                print(f"Warning: Nepodarilo sa zmazať obrázok zo Storage: {e}")
+
+    # 3. KROK: Nakoniec zmažeme samotný príspevok z databázy
+    response = supabase.table("posts").delete().eq("id", post_id).execute()
+    
+    return {"message": "Post and associated image deleted successfully"}
+
 
 @app.put("/posts/{post_id}")
 def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
