@@ -2,8 +2,8 @@ name: Keep Render Awake
 
 on:
   schedule:
-    # Časovač (Cron job) - spustí sa každých 1 minút
-    - cron: '*/1 * * * *'
+    # Časovač (Cron job) - spustí sa každých 10 minút
+    - cron: '*/10 * * * *'
   workflow_dispatch: 
     # Toto ti umožní spustiť bota kedykoľvek aj manuálne tlačidlom
 
