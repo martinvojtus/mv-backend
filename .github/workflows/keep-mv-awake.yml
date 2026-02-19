@@ -1,0 +1,16 @@
+name: Keep Render Awake
+
+on:
+  schedule:
+    # Časovač (Cron job) - spustí sa každých 10 minút
+    - cron: '*/10 * * * *'
+  workflow_dispatch: 
+    # Toto ti umožní spustiť bota kedykoľvek aj manuálne tlačidlom
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Ping to Backend
+        # Tichý cURL príkaz, ktorý len "zaklope" na tvoje API a zahodí odpoveď
+        run: curl -s "https://mv-backend-ak8l.onrender.com/posts?skip=0&limit=1" > /dev/null
