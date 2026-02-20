@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, desc
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, desc
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime
@@ -36,7 +36,6 @@ class Post(Base):
     image_url = Column(String, nullable=True) 
     at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=True)
-    include_timestamps = Column(Boolean, default=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -45,13 +44,11 @@ class PostCreate(BaseModel):
     title: str
     text: str
     image_url: Optional[str] = None 
-    include_timestamps: bool = True
 
 class PostUpdate(BaseModel):
     title: str
     text: str
     image_url: Optional[str] = None 
-    include_timestamps: bool = True
 
 class PostResponse(BaseModel):
     id: int
@@ -60,7 +57,6 @@ class PostResponse(BaseModel):
     image_url: Optional[str] = None 
     at: datetime
     updated_at: Optional[datetime] = None
-    include_timestamps: bool
 
     class Config:
         orm_mode = True
@@ -96,7 +92,7 @@ def get_posts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
 
 @app.post("/posts")
 def create_post(post: PostCreate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
-    db_post = Post(title=post.title, text=post.text, image_url=post.image_url, at=datetime.utcnow(), include_timestamps=post.include_timestamps)
+    db_post = Post(title=post.title, text=post.text, image_url=post.image_url, at=datetime.utcnow())
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
@@ -143,7 +139,6 @@ def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get
     db_post.text = post_update.text
     db_post.image_url = post_update.image_url
     db_post.updated_at = datetime.utcnow()
-    db_post.include_timestamps = post_update.include_timestamps
     
     db.commit()
     db.refresh(db_post)
