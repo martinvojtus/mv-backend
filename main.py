@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, desc
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, desc
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime
@@ -18,7 +18,6 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "TvojeTajneHeslo")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Pripojenie k Supabase Storage
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -36,6 +35,7 @@ class Post(Base):
     image_url = Column(String, nullable=True) 
     at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=True)
+    show_date = Column(Boolean, default=True) # Nový stĺpec
 
 Base.metadata.create_all(bind=engine)
 
@@ -44,11 +44,13 @@ class PostCreate(BaseModel):
     title: str
     text: str
     image_url: Optional[str] = None 
+    show_date: bool = True # Nový parameter
 
 class PostUpdate(BaseModel):
     title: str
     text: str
     image_url: Optional[str] = None 
+    show_date: bool = True # Nový parameter
 
 class PostResponse(BaseModel):
     id: int
@@ -57,6 +59,7 @@ class PostResponse(BaseModel):
     image_url: Optional[str] = None 
     at: datetime
     updated_at: Optional[datetime] = None
+    show_date: bool = True
 
     class Config:
         orm_mode = True
@@ -85,27 +88,24 @@ app.add_middleware(
 )
 
 # --- ENDPOINTY ---
-# ✏️ ZMENA: Endpoint teraz podporuje stránkovanie (skip a limit)
 @app.get("/posts", response_model=List[PostResponse])
 def get_posts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return db.query(Post).order_by(desc(Post.at)).offset(skip).limit(limit).all()
 
 @app.post("/posts")
 def create_post(post: PostCreate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
-    db_post = Post(title=post.title, text=post.text, image_url=post.image_url, at=datetime.utcnow())
+    db_post = Post(title=post.title, text=post.text, image_url=post.image_url, show_date=post.show_date, at=datetime.utcnow())
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
     return db_post
 
-# ✏️ OPRAVENÉ MAZANIE: Používa SQLAlchemy a správny názov "post-images"
 @app.delete("/posts/{post_id}")
 def delete_post(post_id: int, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
     db_post = db.query(Post).filter(Post.id == post_id).first()
     if not db_post:
         raise HTTPException(status_code=404, detail="Post not found")
     
-    # KROK 1: Zmazať obrázok zo Supabase (ak existuje)
     if db_post.image_url and supabase:
         file_name = db_post.image_url.split("/")[-1]
         try:
@@ -113,21 +113,16 @@ def delete_post(post_id: int, db: Session = Depends(get_db), pwd: None = Depends
         except Exception as e:
             print(f"Warning: Nepodarilo sa zmazať obrázok zo Storage: {e}")
 
-    # KROK 2: Zmazať príspevok z databázy
     db.delete(db_post)
     db.commit()
-    
     return {"message": "Post and associated image deleted successfully"}
 
-
-# ✏️ VYLEPŠENÁ ÚPRAVA: Automaticky zmaže starú fotku, ak ju odstrániš alebo nahradíš
 @app.put("/posts/{post_id}")
 def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
     db_post = db.query(Post).filter(Post.id == post_id).first()
     if not db_post:
         raise HTTPException(status_code=404, detail="Post not found")
     
-    # Ak mal príspevok fotku a my sme ju teraz v Admine zmenili alebo vymazali, zmažeme starú zo servera
     if db_post.image_url and db_post.image_url != post_update.image_url and supabase:
         file_name = db_post.image_url.split("/")[-1]
         try:
@@ -138,6 +133,7 @@ def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get
     db_post.title = post_update.title
     db_post.text = post_update.text
     db_post.image_url = post_update.image_url
+    db_post.show_date = post_update.show_date # Uloženie zmeny zobrazenia dátumu
     db_post.updated_at = datetime.utcnow()
     
     db.commit()
@@ -148,20 +144,12 @@ def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get
 async def upload_image(file: UploadFile = File(...), pwd: None = Depends(verify_password)):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase kľúče nie sú nastavené na Renderi.")
-    
     try:
         file_ext = file.filename.split(".")[-1]
         file_name = f"{uuid.uuid4()}.{file_ext}"
         contents = await file.read()
-        
-        supabase.storage.from_("post-images").upload(
-            file_name, 
-            contents, 
-            {"content-type": file.content_type}
-        )
-        
+        supabase.storage.from_("post-images").upload(file_name, contents, {"content-type": file.content_type})
         public_url = supabase.storage.from_("post-images").get_public_url(file_name)
-        
         return {"image_url": public_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
