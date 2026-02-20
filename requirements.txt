@@ -4,4 +4,5 @@ sqlmodel
 psycopg2-binary
 python-multipart
 supabase
-
+pytest
+httpx
