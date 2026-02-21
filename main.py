@@ -154,6 +154,6 @@ async def upload_image(file: UploadFile = File(...), pwd: None = Depends(verify_
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
-        @app.post("/verify")
-def verify_admin(pwd: None = Depends(verify_password)):
+@app.get("/verify")
+def verify_admin(pwd: str = Depends(verify_password)):
     return {"message": "ok"}
