@@ -35,22 +35,25 @@ class Post(Base):
     image_url = Column(String, nullable=True) 
     at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=True)
-    show_date = Column(Boolean, default=True) # Nový stĺpec
+    show_date = Column(Boolean, default=True)
+    author = Column(String, nullable=True) # 🛠️ Pridaný stĺpec pre databázu
 
 Base.metadata.create_all(bind=engine)
 
 # --- Pydantic MODELY ---
 class PostCreate(BaseModel):
-    title: str
+    title: Optional[str] = ""
     text: str
     image_url: Optional[str] = None 
-    show_date: bool = True # Nový parameter
+    show_date: Optional[bool] = True
+    author: Optional[str] = None # 🛠️ Pridané
 
 class PostUpdate(BaseModel):
-    title: str
-    text: str
+    title: Optional[str] = None
+    text: Optional[str] = None
     image_url: Optional[str] = None 
-    show_date: bool = True # Nový parameter
+    show_date: Optional[bool] = None
+    author: Optional[str] = None # 🛠️ Pridané
 
 class PostResponse(BaseModel):
     id: int
@@ -59,7 +62,8 @@ class PostResponse(BaseModel):
     image_url: Optional[str] = None 
     at: datetime
     updated_at: Optional[datetime] = None
-    show_date: bool = True
+    show_date: bool
+    author: Optional[str] = None # 🛠️ Pridané (aby ho API vrátilo na frontend)
 
     class Config:
         orm_mode = True
@@ -94,7 +98,15 @@ def get_posts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
 
 @app.post("/posts")
 def create_post(post: PostCreate, db: Session = Depends(get_db), pwd: None = Depends(verify_password)):
-    db_post = Post(title=post.title, text=post.text, image_url=post.image_url, show_date=post.show_date, at=datetime.utcnow())
+    # 🛠️ Pridali sme ukladanie author
+    db_post = Post(
+        title=post.title, 
+        text=post.text, 
+        image_url=post.image_url, 
+        show_date=post.show_date, 
+        author=post.author, 
+        at=datetime.utcnow()
+    )
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
@@ -133,7 +145,8 @@ def update_post(post_id: int, post_update: PostUpdate, db: Session = Depends(get
     db_post.title = post_update.title
     db_post.text = post_update.text
     db_post.image_url = post_update.image_url
-    db_post.show_date = post_update.show_date # Uloženie zmeny zobrazenia dátumu
+    db_post.show_date = post_update.show_date 
+    db_post.author = post_update.author # 🛠️ Pridaná možnosť upraviť autora
     db_post.updated_at = datetime.utcnow()
     
     db.commit()
@@ -157,18 +170,3 @@ async def upload_image(file: UploadFile = File(...), pwd: None = Depends(verify_
 @app.get("/verify")
 def verify_admin(pwd: str = Depends(verify_password)):
     return {"message": "ok"}
-    
-class PostCreate(BaseModel):
-    title: Optional[str] = ""
-    text: str
-    image_url: Optional[str] = None
-    show_date: Optional[bool] = True
-    author: Optional[str] = None  # <-- TOTO PRIDAJ
-
-class PostUpdate(BaseModel):
-    title: Optional[str] = None
-    text: Optional[str] = None
-    image_url: Optional[str] = None
-    show_date: Optional[bool] = None
-    author: Optional[str] = None  # <-- TOTO PRIDAJ
-
