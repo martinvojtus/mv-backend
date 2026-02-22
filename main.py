@@ -157,3 +157,18 @@ async def upload_image(file: UploadFile = File(...), pwd: None = Depends(verify_
 @app.get("/verify")
 def verify_admin(pwd: str = Depends(verify_password)):
     return {"message": "ok"}
+    
+class PostCreate(BaseModel):
+    title: Optional[str] = ""
+    text: str
+    image_url: Optional[str] = None
+    show_date: Optional[bool] = True
+    author: Optional[str] = None  # <-- TOTO PRIDAJ
+
+class PostUpdate(BaseModel):
+    title: Optional[str] = None
+    text: Optional[str] = None
+    image_url: Optional[str] = None
+    show_date: Optional[bool] = None
+    author: Optional[str] = None  # <-- TOTO PRIDAJ
+
