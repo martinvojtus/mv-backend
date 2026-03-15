@@ -1,4 +1,4 @@
-# build v1.4
+# build v1.5
 from flask import Flask, Response, request
 import requests
 import os
@@ -32,11 +32,11 @@ def zisti_dex_info(token_adresa):
         res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{token_adresa}").json()
         if res.get("pairs"):
             p = res["pairs"][0]
-            return p.get("baseToken", {}).get("symbol", "Neznámy"), float(p.get("priceUsd", 0)), float(p.get("liquidity", {}).get("usd", 0))
+            return p.get("baseToken", {}).get("symbol", "Unknown"), float(p.get("priceUsd", 0)), float(p.get("liquidity", {}).get("usd", 0))
     except: pass
-    return "Neznámy", 0.0, 0.0
+    return "Unknown", 0.0, 0.0
 
-# ⚙️ 1. MOTOR (Lovi velryby)
+# ⚙️ 1. MOTOR (Whale Hunter)
 def lov_velryb():
     rpc_url = "https://mainnet.helius-rpc.com/?api-key=3770f955-3c49-4abc-b2c6-960a7e138ee3"
     target_wallet = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" 
@@ -60,13 +60,14 @@ def lov_velryb():
                             rozdiel = zostatok_post - zostatok_pre
                             if abs(rozdiel) < 1: continue 
                             
-                            akcia = "🟢 NÁKUP" if rozdiel > 0 else "🔴 PREDAJ"
+                            # 🇬🇧 Preklad metadát
+                            akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             symbol, cena, likvidita = zisti_dex_info(mint)
                             hodnota_usd = abs(rozdiel) * cena
-                            riziko = "⚠️ Vysoké" if likvidita < 10000 else "✅ Nízke"
+                            riziko = "⚠️ High" if likvidita < 10000 else "✅ Low"
                             cas = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
                             
-                            profi_data = f"{cas} | {akcia} | Minca: {symbol} | Hodnota: ${hodnota_usd:.2f} | Likvidita: ${likvidita:.2f} ({riziko})"
+                            profi_data = f"{cas} | {akcia} | Token: {symbol} | Value: ${hodnota_usd:.2f} | Liquidity: ${likvidita:.2f} ({riziko})"
                             supabase.table('velryby_v2').insert({"transakcia": latest_tx, "token": mint, "suma": abs(rozdiel), "ai_audit": profi_data}).execute()
         except: pass
         time.sleep(15)
@@ -74,24 +75,21 @@ def lov_velryb():
 # 🧠 2. MOTOR (AI Radar na zhluky/pumpy)
 def ai_radar():
     while True:
-        time.sleep(300) # Kontroluje kazdych 5 minut
+        time.sleep(300) 
         if not supabase or not OPENAI_API_KEY: continue
         try:
-            # Stiahne poslednych 50 transakcii
             zaznamy = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute().data
             nakupy = {}
             
-            # Zgrupuje nákupy podľa tokenu
             for z in zaznamy:
-                if "🟢 NÁKUP" in z.get("ai_audit", ""):
+                # 🇬🇧 Kompatibilné s novým aj starým formátom
+                if "🟢" in z.get("ai_audit", ""):
                     t = z["token"]
                     nakupy[t] = nakupy.get(t, []) + [z]
             
-            # Hľadá token, ktorý kúpili aspoň 3 veľryby naraz
             for token, zoznam in nakupy.items():
                 if len(zoznam) >= 3:
                     if not supabase.table('signaly').select("id").eq("token", token).execute().data:
-                        # Prebudí AI a minie kredit iba na skutočný signál!
                         openai.api_key = OPENAI_API_KEY
                         prompt = f"Multiple crypto whales just executed massive buy orders for Solana token {token} simultaneously. Is this a coordinated pump or insider accumulation? Give a 2-sentence max premium trading signal for investors."
                         ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
@@ -104,7 +102,7 @@ def ai_radar():
 threading.Thread(target=lov_velryb, daemon=True).start()
 threading.Thread(target=ai_radar, daemon=True).start()
 
-# 🌐 WEB API
+# 🌐 WEB API (Anglické výstupy)
 @app.route('/')
 def status():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
@@ -115,7 +113,9 @@ def ukaz_historiu():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
-        return Response(json.dumps({"ulozene_velryby": res.data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        # 🇬🇧 Mapovanie slovenských stĺpcov na anglické JSON kľúče
+        english_data = [{"id": r["id"], "transaction": r["transakcia"], "token": r["token"], "amount": r["suma"], "ai_audit": r["ai_audit"]} for r in res.data]
+        return Response(json.dumps({"saved_whales": english_data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 @app.route('/signaly')
@@ -123,7 +123,9 @@ def ukaz_signaly():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
-        return Response(json.dumps({"vip_signaly": res.data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        # 🇬🇧 Mapovanie slovenských stĺpcov na anglické JSON kľúče
+        english_signals = [{"id": r["id"], "timestamp": r["cas"], "token": r["token"], "ai_analysis": r["ai_analyza"]} for r in res.data]
+        return Response(json.dumps({"vip_signals": english_signals}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 if __name__ == '__main__':
