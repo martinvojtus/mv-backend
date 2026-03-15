@@ -1,4 +1,4 @@
-# build v1.6
+# build v2.0
 from flask import Flask, Response, request
 import requests
 import os
@@ -11,19 +11,30 @@ from supabase import create_client, Client
 
 app = Flask(__name__)
 
-# 🔐 Kľúče
+# 🔐 Kľúče a Nastavenia
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 NASE_API_HESLO = os.environ.get("NASE_API_HESLO", "master_kluc_123")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# ☁️ Pripojenie databázy
+# 🤖 Telegram Kľúče
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+TG_KANAL_ZAKLAD = os.environ.get("TG_KANAL_ZAKLAD", "")
+TG_KANAL_VIP = os.environ.get("TG_KANAL_VIP", "")
+
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def over_heslo():
     return (request.headers.get("X-API-Key") or request.args.get("api_key")) == NASE_API_HESLO
+
+def posli_tg_spravu(kanal, text):
+    if not TG_BOT_TOKEN or not kanal: return
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": kanal, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try: requests.post(url, json=payload)
+    except: pass
 
 def zisti_dex_info(token_adresa):
     if token_adresa == "So11111111111111111111111111111111111111112": return "SOL", 0, 10000000
@@ -32,11 +43,13 @@ def zisti_dex_info(token_adresa):
         res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{token_adresa}").json()
         if res.get("pairs"):
             p = res["pairs"][0]
-            return p.get("baseToken", {}).get("symbol", "Unknown"), float(p.get("priceUsd", 0)), float(p.get("liquidity", {}).get("usd", 0))
+            sym = p.get("baseToken", {}).get("symbol", "")
+            if not sym or sym.lower() == "unknown": sym = token_adresa[:4].upper()
+            return sym, float(p.get("priceUsd", 0)), float(p.get("liquidity", {}).get("usd", 0))
     except: pass
-    return "Unknown", 0.0, 0.0
+    return token_adresa[:4].upper(), 0.0, 0.0
 
-# ⚙️ 1. MOTOR (Whale Hunter)
+# ⚙️ 1. MOTOR (Základný kanál - ENGLISH)
 def lov_velryb():
     rpc_url = "https://mainnet.helius-rpc.com/?api-key=3770f955-3c49-4abc-b2c6-960a7e138ee3"
     target_wallet = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" 
@@ -63,15 +76,21 @@ def lov_velryb():
                             akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             symbol, cena, likvidita = zisti_dex_info(mint)
                             hodnota_usd = abs(rozdiel) * cena
-                            riziko = "⚠️ High" if likvidita < 10000 else "✅ Low"
-                            cas = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
                             
-                            profi_data = f"{cas} | {akcia} | Token: {symbol} | Value: ${hodnota_usd:.2f} | Liquidity: ${likvidita:.2f} ({riziko})"
+                            # Logika pre databazu
+                            riziko_en = "⚠️ High Risk" if likvidita < 10000 else "✅ Safe"
+                            profi_data = f"{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')} | {akcia} | Token: {symbol} | Value: ${hodnota_usd:.2f} | Liquidity: ${likvidita:.2f}"
                             supabase.table('velryby_v2').insert({"transakcia": latest_tx, "token": mint, "suma": abs(rozdiel), "ai_audit": profi_data}).execute()
+                            
+                            # 📢 Správa pre laikov (Anglicky do Telegramu)
+                            if rozdiel > 0:
+                                tg_riziko = "⚠️ Warning, new unverified coin!" if likvidita < 10000 else "✅ Safe (healthy liquidity pool)"
+                                tg_sprava = f"🚨 <b>MASSIVE WHALE BUY!</b> 🚨\n\n🪙 <b>Coin:</b> {symbol}\n💸 <b>Invested:</b> ${hodnota_usd:,.0f}\n💧 <b>Safety:</b> {tg_riziko}\n\n📝 <b>Quick Summary:</b>\nA massive whale just bet a fortune that {symbol} is going up. If you want to follow their lead, click the link below.\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>📈 View Chart & Buy Here</a>"
+                                posli_tg_spravu(TG_KANAL_ZAKLAD, tg_sprava)
         except: pass
         time.sleep(15)
 
-# 🧠 2. MOTOR (AI Radar na zhluky/pumpy)
+# 🧠 2. MOTOR (VIP kanál - ENGLISH)
 def ai_radar():
     while True:
         time.sleep(300) 
@@ -79,7 +98,6 @@ def ai_radar():
         try:
             zaznamy = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute().data
             nakupy = {}
-            
             for z in zaznamy:
                 if "🟢" in z.get("ai_audit", ""):
                     t = z["token"]
@@ -88,15 +106,20 @@ def ai_radar():
             for token, zoznam in nakupy.items():
                 if len(zoznam) >= 3:
                     if not supabase.table('signaly').select("id").eq("token", token).execute().data:
-                        symbol, _, _ = zisti_dex_info(token) # 🪙 Vytiahne realny nazov
+                        symbol, _, _ = zisti_dex_info(token)
                         openai.api_key = OPENAI_API_KEY
-                        prompt = f"Multiple crypto whales just executed massive buy orders for Solana token {symbol} ({token}) simultaneously. Is this a coordinated pump or insider accumulation? Give a 2-sentence max premium trading signal for investors."
-                        ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
+                        
+                        # 💥 Anglický "Idiot-Proof" príkaz pre AI
+                        prompt = f"You are a ruthless crypto expert. 3 whales just simultaneously bought the Solana coin {symbol}. Skip the boring warnings. Answer exactly in this format for Telegram:\n🔥 Opinion: [Your take]\n🎯 Action: [BUY / WATCH / STAY AWAY]\n💡 Reason: [1 short sentence why]"
+                        
+                        ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=150)
                         signal_text = ai_res.choices[0].message.content.strip()
                         
-                        cas = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-                        # 🎯 Jasne oznacenie tokenu pre VIP
-                        supabase.table('signaly').insert({"cas": cas, "token": token, "ai_analyza": f"🚨 VIP SIGNAL [{symbol}]: {signal_text}"}).execute()
+                        supabase.table('signaly').insert({"cas": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'), "token": token, "ai_analyza": f"🚨 VIP SIGNAL [{symbol}]:\n{signal_text}"}).execute()
+                        
+                        # 🚨 Správa do VIP (Anglicky)
+                        vip_sprava = f"👑 <b>VIP AI SIGNAL: WHALE SWARM!</b> 👑\n\n🪙 <b>Coin:</b> {symbol}\n👀 <b>What's happening:</b> Several whales bought this coin at the exact same time. The radar detected an anomaly.\n\n🤖 <b>AI Advice:</b>\n{signal_text}\n\n🔗 <a href='https://dexscreener.com/solana/{token}'>📈 View on DexScreener</a>"
+                        posli_tg_spravu(TG_KANAL_VIP, vip_sprava)
         except: pass
 
 threading.Thread(target=lov_velryb, daemon=True).start()
@@ -106,23 +129,14 @@ threading.Thread(target=ai_radar, daemon=True).start()
 @app.route('/')
 def status():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
-    return Response(json.dumps({"api_status": "ONLINE", "mode": "B2M PREMIUM + AI RADAR 📡"}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+    return Response(json.dumps({"api_status": "ONLINE", "mode": "B2C TELEGRAM GLOBAL 🌍"}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 @app.route('/historia')
 def ukaz_historiu():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
-        english_data = [{"id": r["id"], "transaction": r["transakcia"], "token": r["token"], "amount": r["suma"], "ai_audit": r["ai_audit"]} for r in res.data]
-        
-        # 📖 Legenda pre kupujucich API
-        vysvetlivky = {
-            "🟢 BUY / 🔴 SELL": "Direction of the whale transaction.",
-            "Value": "Estimated USD value based on current DEX prices.",
-            "Liquidity Risk": "⚠️ High Risk = Liquidity under $10,000 (Rug-pull danger). ✅ Low Risk = Healthy liquidity pool."
-        }
-        
-        return Response(json.dumps({"data_legend": vysvetlivky, "saved_whales": english_data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        return Response(json.dumps({"saved_whales": res.data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 @app.route('/signaly')
@@ -130,8 +144,7 @@ def ukaz_signaly():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
-        english_signals = [{"id": r["id"], "timestamp": r["cas"], "token": r["token"], "ai_analysis": r["ai_analyza"]} for r in res.data]
-        return Response(json.dumps({"vip_signals": english_signals}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        return Response(json.dumps({"vip_signals": res.data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 if __name__ == '__main__':
