@@ -1,4 +1,4 @@
-# build v1.5
+# build v1.6
 from flask import Flask, Response, request
 import requests
 import os
@@ -60,7 +60,6 @@ def lov_velryb():
                             rozdiel = zostatok_post - zostatok_pre
                             if abs(rozdiel) < 1: continue 
                             
-                            # 🇬🇧 Preklad metadát
                             akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             symbol, cena, likvidita = zisti_dex_info(mint)
                             hodnota_usd = abs(rozdiel) * cena
@@ -82,7 +81,6 @@ def ai_radar():
             nakupy = {}
             
             for z in zaznamy:
-                # 🇬🇧 Kompatibilné s novým aj starým formátom
                 if "🟢" in z.get("ai_audit", ""):
                     t = z["token"]
                     nakupy[t] = nakupy.get(t, []) + [z]
@@ -90,19 +88,21 @@ def ai_radar():
             for token, zoznam in nakupy.items():
                 if len(zoznam) >= 3:
                     if not supabase.table('signaly').select("id").eq("token", token).execute().data:
+                        symbol, _, _ = zisti_dex_info(token) # 🪙 Vytiahne realny nazov
                         openai.api_key = OPENAI_API_KEY
-                        prompt = f"Multiple crypto whales just executed massive buy orders for Solana token {token} simultaneously. Is this a coordinated pump or insider accumulation? Give a 2-sentence max premium trading signal for investors."
+                        prompt = f"Multiple crypto whales just executed massive buy orders for Solana token {symbol} ({token}) simultaneously. Is this a coordinated pump or insider accumulation? Give a 2-sentence max premium trading signal for investors."
                         ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
                         signal_text = ai_res.choices[0].message.content.strip()
                         
                         cas = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-                        supabase.table('signaly').insert({"cas": cas, "token": token, "ai_analyza": f"🚨 VIP SIGNAL: {signal_text}"}).execute()
+                        # 🎯 Jasne oznacenie tokenu pre VIP
+                        supabase.table('signaly').insert({"cas": cas, "token": token, "ai_analyza": f"🚨 VIP SIGNAL [{symbol}]: {signal_text}"}).execute()
         except: pass
 
 threading.Thread(target=lov_velryb, daemon=True).start()
 threading.Thread(target=ai_radar, daemon=True).start()
 
-# 🌐 WEB API (Anglické výstupy)
+# 🌐 WEB API
 @app.route('/')
 def status():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
@@ -113,9 +113,16 @@ def ukaz_historiu():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
-        # 🇬🇧 Mapovanie slovenských stĺpcov na anglické JSON kľúče
         english_data = [{"id": r["id"], "transaction": r["transakcia"], "token": r["token"], "amount": r["suma"], "ai_audit": r["ai_audit"]} for r in res.data]
-        return Response(json.dumps({"saved_whales": english_data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        
+        # 📖 Legenda pre kupujucich API
+        vysvetlivky = {
+            "🟢 BUY / 🔴 SELL": "Direction of the whale transaction.",
+            "Value": "Estimated USD value based on current DEX prices.",
+            "Liquidity Risk": "⚠️ High Risk = Liquidity under $10,000 (Rug-pull danger). ✅ Low Risk = Healthy liquidity pool."
+        }
+        
+        return Response(json.dumps({"data_legend": vysvetlivky, "saved_whales": english_data}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 @app.route('/signaly')
@@ -123,7 +130,6 @@ def ukaz_signaly():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
     try:
         res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
-        # 🇬🇧 Mapovanie slovenských stĺpcov na anglické JSON kľúče
         english_signals = [{"id": r["id"], "timestamp": r["cas"], "token": r["token"], "ai_analysis": r["ai_analyza"]} for r in res.data]
         return Response(json.dumps({"vip_signals": english_signals}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
     except Exception as e: return Response(json.dumps({"error": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
