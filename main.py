@@ -1,8 +1,7 @@
-# build 6.3.0
-from flask import Flask, Response, request
+# build 6.3.1
+from flask import Flask, Response, request, render_template_string
 import requests
 import os
-import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -24,6 +23,39 @@ TG_KANAL_VIP = os.environ.get("TG_KANAL_VIP", "")
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# 🎨 HTML Šablóna pre pekný výpis na webe
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>🐋 VIP Radar Dashboard</title>
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; max-width: 800px; margin: auto; }
+        h1 { color: #ffffff; border-bottom: 2px solid #30363d; padding-bottom: 10px; }
+        .card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .token { color: #58a6ff; font-weight: bold; font-size: 1.1em; }
+        .money { color: #3fb950; font-weight: bold; }
+        .time { color: #8b949e; font-size: 0.9em; float: right; }
+        .audit { margin-top: 10px; padding: 10px; background-color: #0d1117; border-radius: 5px; font-family: monospace; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    {% for item in data %}
+    <div class="card">
+        {{ render_item(item) | safe }}
+    </div>
+    {% endfor %}
+    {% if not data %}
+    <p>Zatiaľ žiadne záznamy. Čakáme na veľryby... 🎣</p>
+    {% endif %}
+</body>
+</html>
+"""
 
 def log_now(msg):
     print(msg, flush=True)
@@ -53,24 +85,28 @@ def get_market_data(mint):
     except: pass
     return {"symbol": str(mint)[:4].upper(), "price": 0, "mc": 1}
 
-def analyze_vip(mint, m_data, value, total_vol, impact, count):
+def analyze_vip(mint, m_data, value, total_vol, impact, cas_teraz):
     if not OPENAI_API_KEY: return
     try:
         openai.api_key = OPENAI_API_KEY
         prompt = (f"Analyze established coin {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Institutional Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
-                  "Target audience: High-net-worth investors seeking mid/long-term multiples. Use 3 lines: 🔥 Macro Opinion, 🎯 Smart Money Action, 💡 Deep Reason. Be highly professional and bold.")
+                  "Target audience: High-net-worth investors. Use 3 lines: 🔥 Macro Opinion, 🎯 Smart Money Action, 💡 Deep Reason. Be bold.")
         ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
         analysis = ai_res.choices[0].message.content.strip()
         
         try: supabase.table('signaly').insert({"token": mint, "ai_analyza": analysis}).execute()
         except: pass
         
-        vip_msg = (f"👑 <b>SMART MONEY SIGNAL</b> 👑\n\n🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Inflow:</b> ${total_vol:,.0f}\n📊 <b>MC Impact:</b> {impact:.2f}%\n\n"
+        vip_msg = (f"👑 <b>SMART MONEY SIGNAL</b> 👑\n"
+                   f"⏱️ <b>Time:</b> {cas_teraz}\n\n"
+                   f"🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Inflow:</b> ${total_vol:,.0f}\n📊 <b>MC Impact:</b> {impact:.2f}%\n\n"
                    f"🤖 <b>AI Institutional Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Asset</a>")
         posli_tg_spravu(TG_KANAL_VIP, vip_msg)
     except: pass
 
 def spracuj_transakcie_na_pozadi(filtroidne_data):
+    cas_teraz = datetime.utcnow().strftime('%H:%M:%S UTC')
+    
     for tx in filtroidne_data:
         transfers = tx.get("tokenTransfers", [])
         for t in transfers:
@@ -84,7 +120,6 @@ def spracuj_transakcie_na_pozadi(filtroidne_data):
             m_data = get_market_data(mint)
             val = amount * m_data["price"]
 
-            # 🛡️ Tvrdý filter: Iba reálne objemy nad 75 000 $ (rezerva pre fluktuáciu ceny)
             if m_data["price"] == 0 or val < 75000: continue
 
             impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
@@ -98,19 +133,18 @@ def spracuj_transakcie_na_pozadi(filtroidne_data):
             recent = supabase.table('velryby_v2').select("ai_audit").eq("token", mint).gt("created_at", ten_mins_ago).execute().data
             total_vol = sum(float(r['ai_audit'].split('$')[1].split(' |')[0].replace(',', '')) for r in recent if '$' in r.get('ai_audit', ''))
 
-            # 📡 RADAR PRE HIGH-ROLLERS
             if val >= 100000 or (total_vol >= 200000 and len(recent) >= 2):
                 msg_type = "🐋 MEGA WHALE" if val >= 100000 else "🏦 INSTITUTIONAL ACCUMULATION"
 
-                msg = (f"🚨 <b>{msg_type}</b>\n\n🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
+                msg = (f"🚨 <b>{msg_type}</b>\n"
+                       f"⏱️ <b>Time:</b> {cas_teraz}\n\n"
+                       f"🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
                        f"📈 <b>MC Impact:</b> {impact:.2f}%\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
                 posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
-                # 💎 VIP SIGNÁL: Iba absolútne extrémy
                 if total_vol >= 250000 or val > 150000:
-                    analyze_vip(mint, m_data, val, total_vol, impact, len(recent))
+                    analyze_vip(mint, m_data, val, total_vol, impact, cas_teraz)
 
-# 🛑 Extrémny Pre-Filter: Pustí dnu len transakcie, kde je aspoň ~500 SOL (75k$) alebo 75k USDC
 def je_velka_ryba(tx):
     for t in tx.get("tokenTransfers", []):
         mint = t.get("mint")
@@ -123,34 +157,53 @@ def je_velka_ryba(tx):
 def handle_webhook():
     if not over_heslo(): return "Unauthorized", 401
     data = request.json
-    
     if data and isinstance(data, list):
         silne_transakcie = [tx for tx in data if je_velka_ryba(tx)]
         if silne_transakcie:
             executor.submit(spracuj_transakcie_na_pozadi, silne_transakcie)
-
     return "OK", 200
 
 @app.route('/test-tg')
 def test_tg():
-    posli_tg_spravu(TG_KANAL_ZAKLAD, "✅ <b>System check:</b> Bot a kanál sú prepojené! Pripravený na veľryby.")
+    cas_teraz = datetime.utcnow().strftime('%H:%M:%S UTC')
+    posli_tg_spravu(TG_KANAL_ZAKLAD, f"✅ <b>System check</b>\n⏱️ <b>Time:</b> {cas_teraz}\nBot a kanál sú prepojené! Pripravený na veľryby.")
     return "Test správa odoslaná! Skontroluj Telegram."
 
 @app.route('/historia')
 def ukaz_historiu():
     if not over_heslo(): return "Unauthorized", 401
     res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
-    return Response(json.dumps({"saved_whales": res.data}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+    
+    def render_whale(item):
+        cas = item.get('created_at', 'Neznámy čas')[:19].replace('T', ' ')
+        return f"""
+        <span class="time">⏱️ {cas}</span>
+        <div>🆔 TX ID: {item.get('id')}</div>
+        <div>🪙 Token: <a href="https://dexscreener.com/solana/{item.get('token')}" target="_blank" class="token">{item.get('token')[:8]}...</a></div>
+        <div class="audit">📊 {item.get('ai_audit')}</div>
+        """
+    
+    return render_template_string(HTML_TEMPLATE, title="🐋 Úlovky (História)", data=res.data, render_item=render_whale)
 
 @app.route('/signaly')
 def ukaz_signaly():
     if not over_heslo(): return "Unauthorized", 401
     res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
-    return Response(json.dumps({"vip_signals": res.data}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+    
+    def render_signal(item):
+        cas = item.get('created_at', item.get('cas', 'Neznámy čas'))[:19].replace('T', ' ')
+        return f"""
+        <span class="time">⏱️ {cas}</span>
+        <div>🆔 Signal ID: {item.get('id')}</div>
+        <div>🪙 Token: <a href="https://dexscreener.com/solana/{item.get('token')}" target="_blank" class="token">{item.get('token')[:8]}...</a></div>
+        <div class="audit">🤖 AI Názor:<br>{item.get('ai_analyza', '').replace('\n', '<br>')}</div>
+        """
+        
+    return render_template_string(HTML_TEMPLATE, title="👑 VIP AI Signály", data=res.data, render_item=render_signal)
 
 @app.route('/')
 def status():
-    return Response(json.dumps({"status": "ONLINE", "mode": "HIGH_ROLLER_PRO 6.3.0 ⚡"}, indent=4), mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "VISUAL_DASHBOARD 6.3.1 🎨"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
