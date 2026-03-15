@@ -1,4 +1,4 @@
-# build v5.0.6
+# build v5.0.8
 from flask import Flask, Response, request
 import requests
 import os
@@ -48,7 +48,7 @@ def zisti_dex_info(token_adresa):
     except: pass
     return token_adresa[:4].upper(), 0.0, 0.0
 
-# ⚙️ 1. MOTOR (Základný kanál - ENGLISH)
+# ⚙️ 1. MOTOR (Základný kanál)
 def lov_velryb():
     rpc_url = "https://mainnet.helius-rpc.com/?api-key=3770f955-3c49-4abc-b2c6-960a7e138ee3"
     target_wallet = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" 
@@ -76,9 +76,9 @@ def lov_velryb():
                             symbol, cena, likvidita = zisti_dex_info(mint)
                             hodnota_usd = abs(rozdiel) * cena
                             
-                            # 🛑 TVRDÝ FILTER: Iba nákupy/predaje nad 10 000 $ 
+                            # 🛑 TVRDÝ FILTER: 10 000 $
                             if cena > 0 and hodnota_usd < 10000: continue
-                            if cena == 0 and abs(rozdiel) < 500000: continue # Pre úplne nové mince bez ceny berieme len masívne presuny
+                            if cena == 0 and abs(rozdiel) < 500000: continue 
                             
                             akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             riziko_en = "⚠️ High Risk" if likvidita < 10000 else "✅ Safe"
@@ -93,7 +93,7 @@ def lov_velryb():
         except: pass
         time.sleep(15)
 
-# 🧠 2. MOTOR (VIP kanál - ENGLISH)
+# 🧠 2. MOTOR (VIP kanál)
 def ai_radar():
     while True:
         time.sleep(300) 
