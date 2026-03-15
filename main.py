@@ -1,4 +1,4 @@
-# build v5.0.7
+# build v5.0.9
 from flask import Flask, Response
 import requests
 import os
@@ -6,14 +6,13 @@ import json
 import sqlite3
 import threading
 import time
-import openai # 🛑 Novy AI mozog!
+import openai
 
 app = Flask(__name__)
 
-# 🔑 Tvoj OpenAI kľúč (Zatial nechame prazdny)
-OPENAI_API_KEY = "VLOZ_SVOJ_OPENAI_KLUC_TU"
+# 🔑 Kľúč si kód ťahá bezpečne zo servera (Renderu)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# 🛠️ Inicializacia databazy (Nova verzia so stlpcom ai_audit)
 def init_db():
     conn = sqlite3.connect('whales.db')
     conn.execute('CREATE TABLE IF NOT EXISTS velryby_v2 (id INTEGER PRIMARY KEY, transakcia TEXT, token TEXT, suma REAL, ai_audit TEXT)')
@@ -22,10 +21,9 @@ def init_db():
 
 init_db()
 
-# 🧠 AI Audítor
 def sprav_ai_audit(token_adresa):
-    if OPENAI_API_KEY == "VLOZ_SVOJ_OPENAI_KLUC_TU":
-        return "🤖 AI čaká na prepojenie (chýba kľúč)"
+    if not OPENAI_API_KEY:
+        return "🤖 AI čaká na prepojenie (chýba kľúč v Renderi)"
     
     try:
         openai.api_key = OPENAI_API_KEY
@@ -40,7 +38,6 @@ def sprav_ai_audit(token_adresa):
     except Exception as e:
         return f"⚠️ Chyba AI: {str(e)}"
 
-# ⚙️ MOTOR NA POZADI
 def lov_velryb():
     rpc_url = "https://mainnet.helius-rpc.com/?api-key=3770f955-3c49-4abc-b2c6-960a7e138ee3"
     target_wallet = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" 
@@ -69,7 +66,6 @@ def lov_velryb():
                                 
                                 if (mint_adresa == "So11111111111111111111111111111111111111112" and zostatok >= 50) or (mint_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" and zostatok >= 10000):
                                     
-                                    # ⚡ Bleskove zavolanie AI!
                                     ai_vysledok = sprav_ai_audit(mint_adresa)
                                     
                                     conn.execute("INSERT INTO velryby_v2 (transakcia, token, suma, ai_audit) VALUES (?, ?, ?, ?)", (latest_tx, mint_adresa, zostatok, ai_vysledok))
@@ -80,7 +76,6 @@ def lov_velryb():
 
 threading.Thread(target=lov_velryb, daemon=True).start()
 
-# 🌐 WEB ROZHRANIE
 @app.route('/')
 def status():
     return Response(json.dumps({"api_status": "🟢 AI MOTOR BEZI 24/7"}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
