@@ -1,4 +1,4 @@
-# build 6.3.1
+# build 6.3.2
 from flask import Flask, Response, request, render_template_string
 import requests
 import os
@@ -24,7 +24,7 @@ supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 🎨 HTML Šablóna pre pekný výpis na webe
+# 🎨 HTML Šablóna (Vylepšená grafika)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -36,9 +36,7 @@ HTML_TEMPLATE = """
         h1 { color: #ffffff; border-bottom: 2px solid #30363d; padding-bottom: 10px; }
         .card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
         .token { color: #58a6ff; font-weight: bold; font-size: 1.1em; }
-        .money { color: #3fb950; font-weight: bold; }
-        .time { color: #8b949e; font-size: 0.9em; float: right; }
-        .audit { margin-top: 10px; padding: 10px; background-color: #0d1117; border-radius: 5px; font-family: monospace; }
+        .audit { margin-top: 10px; padding: 10px; background-color: #0d1117; border-radius: 5px; font-family: monospace; font-size: 0.95em; line-height: 1.5; border-left: 3px solid #3fb950; }
         a { color: #58a6ff; text-decoration: none; }
         a:hover { text-decoration: underline; }
     </style>
@@ -89,23 +87,23 @@ def analyze_vip(mint, m_data, value, total_vol, impact, cas_teraz):
     if not OPENAI_API_KEY: return
     try:
         openai.api_key = OPENAI_API_KEY
-        prompt = (f"Analyze established coin {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Institutional Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
-                  "Target audience: High-net-worth investors. Use 3 lines: 🔥 Macro Opinion, 🎯 Smart Money Action, 💡 Deep Reason. Be bold.")
+        prompt = (f"Analyze {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Institutional Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
+                  "Use 3 lines: 🔥 Macro Opinion, 🎯 Smart Money Action, 💡 Deep Reason. Be bold.")
         ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
         analysis = ai_res.choices[0].message.content.strip()
         
-        try: supabase.table('signaly').insert({"token": mint, "ai_analyza": analysis}).execute()
+        try: supabase.table('signaly').insert({"token": mint, "ai_analyza": f"⏱️ {cas_teraz} UTC\n\n{analysis}"}).execute()
         except: pass
         
         vip_msg = (f"👑 <b>SMART MONEY SIGNAL</b> 👑\n"
-                   f"⏱️ <b>Time:</b> {cas_teraz}\n\n"
+                   f"⏱️ <b>Time:</b> {cas_teraz} UTC\n\n"
                    f"🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Inflow:</b> ${total_vol:,.0f}\n📊 <b>MC Impact:</b> {impact:.2f}%\n\n"
-                   f"🤖 <b>AI Institutional Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Asset</a>")
+                   f"🤖 <b>AI Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Asset</a>")
         posli_tg_spravu(TG_KANAL_VIP, vip_msg)
     except: pass
 
 def spracuj_transakcie_na_pozadi(filtroidne_data):
-    cas_teraz = datetime.utcnow().strftime('%H:%M:%S UTC')
+    cas_teraz = datetime.utcnow().strftime('%H:%M:%S')
     
     for tx in filtroidne_data:
         transfers = tx.get("tokenTransfers", [])
@@ -120,37 +118,43 @@ def spracuj_transakcie_na_pozadi(filtroidne_data):
             m_data = get_market_data(mint)
             val = amount * m_data["price"]
 
-            if m_data["price"] == 0 or val < 75000: continue
+            # 🛡️ Znížený filter na 15 000 USD (udrží kanál živý)
+            if m_data["price"] == 0 or val < 15000: continue
 
             impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
             tx_sig = tx.get("signature")
-            audit_str = f"VALUE: ${val:,.0f} | MC: ${m_data['mc']:,.0f} | IMPACT: {impact:.2f}%"
+            
+            # 🟢 TU JE VLOŽENÝ ČAS AJ BUY INDIKÁTOR PRE DATABÁZU
+            audit_str = f"⏱️ {cas_teraz} UTC | 🟢 BUY | VALUE: ${val:,.0f} | MC: ${m_data['mc']:,.0f} | IMPACT: {impact:.2f}%"
             
             try: supabase.table('velryby_v2').insert({"transakcia": tx_sig, "token": mint, "suma": amount, "ai_audit": audit_str}).execute()
             except: pass
 
             ten_mins_ago = (datetime.utcnow() - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
             recent = supabase.table('velryby_v2').select("ai_audit").eq("token", mint).gt("created_at", ten_mins_ago).execute().data
-            total_vol = sum(float(r['ai_audit'].split('$')[1].split(' |')[0].replace(',', '')) for r in recent if '$' in r.get('ai_audit', ''))
+            total_vol = sum(float(r['ai_audit'].split('VALUE: $')[1].split(' |')[0].replace(',', '')) for r in recent if 'VALUE: $' in r.get('ai_audit', ''))
 
-            if val >= 100000 or (total_vol >= 200000 and len(recent) >= 2):
-                msg_type = "🐋 MEGA WHALE" if val >= 100000 else "🏦 INSTITUTIONAL ACCUMULATION"
+            # 📡 RADAR: 25k na nákup alebo 50k akumulácia
+            if val >= 25000 or (total_vol >= 50000 and len(recent) >= 2):
+                msg_type = "🐋 WHALE BUY" if val >= 25000 else "📈 ACTIVE ACCUMULATION"
 
                 msg = (f"🚨 <b>{msg_type}</b>\n"
-                       f"⏱️ <b>Time:</b> {cas_teraz}\n\n"
-                       f"🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
+                       f"⏱️ <b>Time:</b> {cas_teraz} UTC\n\n"
+                       f"🪙 <b>Asset:</b> {m_data['symbol']}\n🟢 <b>Action:</b> BUY\n💰 <b>Value:</b> ${val:,.0f}\n"
                        f"📈 <b>MC Impact:</b> {impact:.2f}%\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
                 posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
-                if total_vol >= 250000 or val > 150000:
+                # 💎 VIP: 50k nákup alebo 100k akumulácia
+                if total_vol >= 100000 or val > 50000:
                     analyze_vip(mint, m_data, val, total_vol, impact, cas_teraz)
 
+# 🛑 Zmiernený Pre-Filter: Pustí dnu swapy > 100 SOL (cca 15k$)
 def je_velka_ryba(tx):
     for t in tx.get("tokenTransfers", []):
         mint = t.get("mint")
         amount = float(t.get("tokenAmount", 0))
-        if mint == "So11111111111111111111111111111111111111112" and amount >= 500: return True
-        if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" and amount >= 75000: return True
+        if mint == "So11111111111111111111111111111111111111112" and amount >= 100: return True
+        if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" and amount >= 15000: return True
     return False
 
 @app.route('/webhook', methods=['POST'])
@@ -166,8 +170,8 @@ def handle_webhook():
 @app.route('/test-tg')
 def test_tg():
     cas_teraz = datetime.utcnow().strftime('%H:%M:%S UTC')
-    posli_tg_spravu(TG_KANAL_ZAKLAD, f"✅ <b>System check</b>\n⏱️ <b>Time:</b> {cas_teraz}\nBot a kanál sú prepojené! Pripravený na veľryby.")
-    return "Test správa odoslaná! Skontroluj Telegram."
+    posli_tg_spravu(TG_KANAL_ZAKLAD, f"✅ <b>System check</b>\n⏱️ <b>Time:</b> {cas_teraz}\nBot a kanál sú prepojené! Znížili sme limity na 15,000$, čakáme na prvé úlovky. 🎣")
+    return "Test správa odoslaná!"
 
 @app.route('/historia')
 def ukaz_historiu():
@@ -175,12 +179,11 @@ def ukaz_historiu():
     res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
     
     def render_whale(item):
-        cas = item.get('created_at', 'Neznámy čas')[:19].replace('T', ' ')
+        # Čas a BUY indikátor sú teraz natvrdo uložené priamo v ai_audit
         return f"""
-        <span class="time">⏱️ {cas}</span>
         <div>🆔 TX ID: {item.get('id')}</div>
         <div>🪙 Token: <a href="https://dexscreener.com/solana/{item.get('token')}" target="_blank" class="token">{item.get('token')[:8]}...</a></div>
-        <div class="audit">📊 {item.get('ai_audit')}</div>
+        <div class="audit">{item.get('ai_audit')}</div>
         """
     
     return render_template_string(HTML_TEMPLATE, title="🐋 Úlovky (História)", data=res.data, render_item=render_whale)
@@ -191,9 +194,7 @@ def ukaz_signaly():
     res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
     
     def render_signal(item):
-        cas = item.get('created_at', item.get('cas', 'Neznámy čas'))[:19].replace('T', ' ')
         return f"""
-        <span class="time">⏱️ {cas}</span>
         <div>🆔 Signal ID: {item.get('id')}</div>
         <div>🪙 Token: <a href="https://dexscreener.com/solana/{item.get('token')}" target="_blank" class="token">{item.get('token')[:8]}...</a></div>
         <div class="audit">🤖 AI Názor:<br>{item.get('ai_analyza', '').replace('\n', '<br>')}</div>
@@ -203,7 +204,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response('{"status": "ONLINE", "mode": "VISUAL_DASHBOARD 6.3.1 🎨"}', mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "ACTIVE_MONEY 6.3.2 🟢"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
