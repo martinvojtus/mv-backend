@@ -1,15 +1,16 @@
-# build 6.2.0
+# build 6.3.0
 from flask import Flask, Response, request
 import requests
 import os
 import json
 import sys
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import openai
 from supabase import create_client, Client
 
 app = Flask(__name__)
+executor = ThreadPoolExecutor(max_workers=5)
 
 # 🔐 Config
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -52,13 +53,29 @@ def get_market_data(mint):
     except: pass
     return {"symbol": str(mint)[:4].upper(), "price": 0, "mc": 1}
 
-def spracuj_transakcie_na_pozadi(data):
-    """Táto funkcia beží na pozadí a neblokuje server"""
-    for tx in data:
+def analyze_vip(mint, m_data, value, total_vol, impact, count):
+    if not OPENAI_API_KEY: return
+    try:
+        openai.api_key = OPENAI_API_KEY
+        prompt = (f"Analyze established coin {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Institutional Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
+                  "Target audience: High-net-worth investors seeking mid/long-term multiples. Use 3 lines: 🔥 Macro Opinion, 🎯 Smart Money Action, 💡 Deep Reason. Be highly professional and bold.")
+        ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
+        analysis = ai_res.choices[0].message.content.strip()
+        
+        try: supabase.table('signaly').insert({"token": mint, "ai_analyza": analysis}).execute()
+        except: pass
+        
+        vip_msg = (f"👑 <b>SMART MONEY SIGNAL</b> 👑\n\n🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Inflow:</b> ${total_vol:,.0f}\n📊 <b>MC Impact:</b> {impact:.2f}%\n\n"
+                   f"🤖 <b>AI Institutional Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Asset</a>")
+        posli_tg_spravu(TG_KANAL_VIP, vip_msg)
+    except: pass
+
+def spracuj_transakcie_na_pozadi(filtroidne_data):
+    for tx in filtroidne_data:
         transfers = tx.get("tokenTransfers", [])
         for t in transfers:
             mint = t.get("mint")
-            if not mint or mint == "So11111111111111111111111111111111111111112":
+            if not mint or mint == "So11111111111111111111111111111111111111112" or mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
                 continue
                 
             amount = float(t.get("tokenAmount", 0))
@@ -67,7 +84,8 @@ def spracuj_transakcie_na_pozadi(data):
             m_data = get_market_data(mint)
             val = amount * m_data["price"]
 
-            if m_data["price"] == 0 or val < 2000: continue
+            # 🛡️ Tvrdý filter: Iba reálne objemy nad 75 000 $ (rezerva pre fluktuáciu ceny)
+            if m_data["price"] == 0 or val < 75000: continue
 
             impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
             tx_sig = tx.get("signature")
@@ -80,49 +98,42 @@ def spracuj_transakcie_na_pozadi(data):
             recent = supabase.table('velryby_v2').select("ai_audit").eq("token", mint).gt("created_at", ten_mins_ago).execute().data
             total_vol = sum(float(r['ai_audit'].split('$')[1].split(' |')[0].replace(',', '')) for r in recent if '$' in r.get('ai_audit', ''))
 
-            if val >= 50000 or impact >= 1.0 or (total_vol >= 100000 and len(recent) >= 2):
-                msg_type = "🐋 SINGLE WHALE" if val >= 50000 else "🔥 HIGH IMPACT"
-                if total_vol >= 100000 and val < 50000: msg_type = "🕵️‍♂️ STEALTH ACCUMULATION"
+            # 📡 RADAR PRE HIGH-ROLLERS
+            if val >= 100000 or (total_vol >= 200000 and len(recent) >= 2):
+                msg_type = "🐋 MEGA WHALE" if val >= 100000 else "🏦 INSTITUTIONAL ACCUMULATION"
 
-                msg = (f"🚨 <b>{msg_type}</b>\n\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
-                       f"📊 <b>Impact:</b> {impact:.2f}% of MC\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
+                msg = (f"🚨 <b>{msg_type}</b>\n\n🪙 <b>Asset:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
+                       f"📈 <b>MC Impact:</b> {impact:.2f}%\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
                 posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
-                if total_vol >= 150000 or (impact >= 2.0 and val > 10000):
+                # 💎 VIP SIGNÁL: Iba absolútne extrémy
+                if total_vol >= 250000 or val > 150000:
                     analyze_vip(mint, m_data, val, total_vol, impact, len(recent))
 
-def analyze_vip(mint, m_data, value, total_vol, impact, count):
-    if not OPENAI_API_KEY: return
-    try:
-        openai.api_key = OPENAI_API_KEY
-        prompt = (f"Analyze {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
-                  "Act as a ruthless whale tracker. Use 3 lines: 🔥 Opinion, 🎯 Action, 💡 Reason. Be bold.")
-        ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
-        analysis = ai_res.choices[0].message.content.strip()
-        
-        try: supabase.table('signaly').insert({"token": mint, "ai_analyza": analysis}).execute()
-        except: pass
-        
-        vip_msg = (f"👑 <b>VIP INSIDER SIGNAL</b> 👑\n\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Flow:</b> ${total_vol:,.0f}\n\n"
-                   f"🤖 <b>AI Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>Trade Now</a>")
-        posli_tg_spravu(TG_KANAL_VIP, vip_msg)
-    except: pass
+# 🛑 Extrémny Pre-Filter: Pustí dnu len transakcie, kde je aspoň ~500 SOL (75k$) alebo 75k USDC
+def je_velka_ryba(tx):
+    for t in tx.get("tokenTransfers", []):
+        mint = t.get("mint")
+        amount = float(t.get("tokenAmount", 0))
+        if mint == "So11111111111111111111111111111111111111112" and amount >= 500: return True
+        if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" and amount >= 75000: return True
+    return False
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
     if not over_heslo(): return "Unauthorized", 401
     data = request.json
     
-    # Okamžite odpálime spracovanie na pozadí, aby sme neblokovali server!
     if data and isinstance(data, list):
-        threading.Thread(target=spracuj_transakcie_na_pozadi, args=(data,)).start()
+        silne_transakcie = [tx for tx in data if je_velka_ryba(tx)]
+        if silne_transakcie:
+            executor.submit(spracuj_transakcie_na_pozadi, silne_transakcie)
 
-    # Helius dostane OK okamžite za 0.01 sekundy
     return "OK", 200
 
 @app.route('/test-tg')
 def test_tg():
-    posli_tg_spravu(TG_KANAL_ZAKLAD, "✅ <b>System check:</b> Bot a kanál sú prepojené!")
+    posli_tg_spravu(TG_KANAL_ZAKLAD, "✅ <b>System check:</b> Bot a kanál sú prepojené! Pripravený na veľryby.")
     return "Test správa odoslaná! Skontroluj Telegram."
 
 @app.route('/historia')
@@ -139,7 +150,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response(json.dumps({"status": "ONLINE", "mode": "ASYNC_PRO 6.2.0 ⚡"}, indent=4), mimetype='application/json')
+    return Response(json.dumps({"status": "ONLINE", "mode": "HIGH_ROLLER_PRO 6.3.0 ⚡"}, indent=4), mimetype='application/json')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
