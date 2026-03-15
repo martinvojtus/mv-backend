@@ -1,8 +1,7 @@
-# build 6.4.1
+# build 6.4.2
 from flask import Flask, Response, request, render_template_string
 import requests
 import os
-import json
 from datetime import datetime
 import openai
 from supabase import create_client, Client
@@ -55,14 +54,14 @@ def over_heslo():
 
 def posli_tg_spravu(kanal, text):
     if not TG_BOT_TOKEN or not kanal: return
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": kanal, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=5)
     except: pass
 
 def get_btc_data():
     try:
-        res = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=5).json()
+        res = requests.get("[https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT](https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT)", timeout=5).json()
         return {
             "price": float(res.get("lastPrice", 0)),
             "change_pct": float(res.get("priceChangePercent", 0)),
@@ -75,11 +74,12 @@ def analyze_btc(btc_data, cas_teraz):
     if not OPENAI_API_KEY: return
     try:
         openai.api_key = OPENAI_API_KEY
-        # Umelá inteligencia vygeneruje oba formáty naraz vo forme JSON dát
+        # Odstránený JSON, nahradený jednoduchým oddeľovačom "SPLITTER"
         prompt = (f"Bitcoin is at ${btc_data['price']:,.0f}. 24h Change: {btc_data['change_pct']}%. Vol: ${btc_data['volume']:,.0f}. "
-                  "Respond ONLY with a JSON object containing two keys: 'free' and 'vip'. "
-                  "For 'free': Write 2 short, engaging sentences in Slovak. Summarize the current market vibe, hint at the next potential price movement based on momentum, but leave a cliffhanger (do not reveal exact targets). "
-                  "For 'vip': Write 4 extremely concise bullet points in Slovak using emojis. 1. 🎯 Kľúčové levely (Support/Resistance). 2. 📊 Pravdepodobnosť (Next move odds in %). 3. 🏦 Inštitúcie (Current assumed ETF/MicroStrategy sentiment). 4. 💡 Akcia (Clear macro plan). Be highly professional and brief.")
+                  "Act as a pro crypto analyst. Provide two texts separated exactly by the word 'SPLITTER'.\n"
+                  "Text 1 (Free Teaser before SPLITTER): 2 short sentences in Slovak summarizing market vibe and hinting at next move.\n"
+                  "SPLITTER\n"
+                  "Text 2 (VIP after SPLITTER): 4 concise bullet points in Slovak with emojis: 1. 🎯 Kľúčové levely (Support/Resistance). 2. 📊 Pravdepodobnosť (Next move odds in %). 3. 🏦 Inštitúcie (Current assumed ETF/MicroStrategy sentiment). 4. 💡 Akcia (Clear macro plan).")
         
         ai_res = openai.chat.completions.create(
             model="gpt-3.5-turbo", 
@@ -89,19 +89,19 @@ def analyze_btc(btc_data, cas_teraz):
         
         ai_text = ai_res.choices[0].message.content.strip()
         
-        # Bezpečné vytiahnutie JSON objektu
-        if "{" in ai_text:
-            ai_text = ai_text[ai_text.find("{"):ai_text.rfind("}")+1]
-        data_ai = json.loads(ai_text)
-        
-        free_text = data_ai.get('free', 'Analýza trhu sa spracúva...')
-        vip_text = data_ai.get('vip', 'VIP Dáta momentálne nedostupné.')
+        # Bezpečné rozseknutie textu
+        if "SPLITTER" in ai_text:
+            parts = ai_text.split("SPLITTER")
+            # Odstránime nebezpečné HTML značky, ktoré by mohli zraziť Telegram
+            free_text = parts[0].strip().replace("<", "").replace(">", "")
+            vip_text = parts[1].strip().replace("<", "").replace(">", "")
+        else:
+            free_text = "Analýza trhu sa spracúva, ostaňte naladení..."
+            vip_text = ai_text.replace("<", "").replace(">", "")
 
-        # 💾 Uloženie VIP analýzy do databázy
         try: supabase.table('signaly').insert({"token": "BTC", "ai_analyza": f"💰 Cena: ${btc_data['price']:,.0f} | 📈 24h: {btc_data['change_pct']}%\n\n{vip_text}"}).execute()
         except: pass
         
-        # 💎 Správa pre VIP KANÁL
         vip_msg = (f"👑 <b>BTC MACRO UPDATE</b> 👑\n"
                    f"⏱️ <b>Čas:</b> {cas_teraz} UTC\n\n"
                    f"🪙 <b>Aktívum:</b> Bitcoin (BTC)\n"
@@ -110,7 +110,6 @@ def analyze_btc(btc_data, cas_teraz):
                    f"🧠 <b>PRO INTEL:</b>\n{vip_text}")
         posli_tg_spravu(TG_KANAL_VIP, vip_msg)
 
-        # 🎣 Lákadlo pre ZÁKLADNÝ KANÁL
         free_msg = (f"🌐 <b>MARKET PULSE</b>\n"
                     f"⏱️ <b>Čas:</b> {cas_teraz} UTC\n\n"
                     f"🪙 <b>Bitcoin:</b> ${btc_data['price']:,.0f}\n"
@@ -137,7 +136,6 @@ def trigger_btc_radar():
     try: supabase.table('velryby_v2').insert({"transakcia": tx_id, "token": "BTC", "suma": btc['price'], "ai_audit": audit_str}).execute()
     except: pass
 
-    # Odštartujeme dvojitú analýzu (Free aj VIP naraz)
     analyze_btc(btc, cas_teraz)
 
     return f"Úspech: BTC Radar spustený pri cene ${btc['price']}", 200
@@ -179,7 +177,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.1 👑"}', mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.2 👑"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
