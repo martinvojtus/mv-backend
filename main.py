@@ -1,9 +1,10 @@
-# build 6.1.9
+# build 6.2.0
 from flask import Flask, Response, request
 import requests
 import os
 import json
 import sys
+import threading
 from datetime import datetime, timedelta
 import openai
 from supabase import create_client, Client
@@ -51,14 +52,10 @@ def get_market_data(mint):
     except: pass
     return {"symbol": str(mint)[:4].upper(), "price": 0, "mc": 1}
 
-@app.route('/webhook', methods=['POST'])
-def handle_webhook():
-    if not over_heslo(): return "Unauthorized", 401
-    data = request.json
-
+def spracuj_transakcie_na_pozadi(data):
+    """Táto funkcia beží na pozadí a neblokuje server"""
     for tx in data:
         transfers = tx.get("tokenTransfers", [])
-        
         for t in transfers:
             mint = t.get("mint")
             if not mint or mint == "So11111111111111111111111111111111111111112":
@@ -70,7 +67,6 @@ def handle_webhook():
             m_data = get_market_data(mint)
             val = amount * m_data["price"]
 
-            # 🛡️ Ochranný filter: Ignorujeme balast pod 2000 $
             if m_data["price"] == 0 or val < 2000: continue
 
             impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
@@ -80,12 +76,10 @@ def handle_webhook():
             try: supabase.table('velryby_v2').insert({"transakcia": tx_sig, "token": mint, "suma": amount, "ai_audit": audit_str}).execute()
             except: pass
 
-            # 🧠 Analýza akumulácie
             ten_mins_ago = (datetime.utcnow() - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
             recent = supabase.table('velryby_v2').select("ai_audit").eq("token", mint).gt("created_at", ten_mins_ago).execute().data
             total_vol = sum(float(r['ai_audit'].split('$')[1].split(' |')[0].replace(',', '')) for r in recent if '$' in r.get('ai_audit', ''))
 
-            # 📡 RADAR LOGIKA
             if val >= 50000 or impact >= 1.0 or (total_vol >= 100000 and len(recent) >= 2):
                 msg_type = "🐋 SINGLE WHALE" if val >= 50000 else "🔥 HIGH IMPACT"
                 if total_vol >= 100000 and val < 50000: msg_type = "🕵️‍♂️ STEALTH ACCUMULATION"
@@ -94,11 +88,8 @@ def handle_webhook():
                        f"📊 <b>Impact:</b> {impact:.2f}% of MC\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
                 posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
-                # 💎 VIP SIGNÁL LOGIKA
                 if total_vol >= 150000 or (impact >= 2.0 and val > 10000):
                     analyze_vip(mint, m_data, val, total_vol, impact, len(recent))
-
-    return "OK", 200
 
 def analyze_vip(mint, m_data, value, total_vol, impact, count):
     if not OPENAI_API_KEY: return
@@ -117,10 +108,22 @@ def analyze_vip(mint, m_data, value, total_vol, impact, count):
         posli_tg_spravu(TG_KANAL_VIP, vip_msg)
     except: pass
 
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    if not over_heslo(): return "Unauthorized", 401
+    data = request.json
+    
+    # Okamžite odpálime spracovanie na pozadí, aby sme neblokovali server!
+    if data and isinstance(data, list):
+        threading.Thread(target=spracuj_transakcie_na_pozadi, args=(data,)).start()
+
+    # Helius dostane OK okamžite za 0.01 sekundy
+    return "OK", 200
+
 @app.route('/test-tg')
 def test_tg():
     posli_tg_spravu(TG_KANAL_ZAKLAD, "✅ <b>System check:</b> Bot a kanál sú prepojené!")
-    return "Test správa odoslaná!"
+    return "Test správa odoslaná! Skontroluj Telegram."
 
 @app.route('/historia')
 def ukaz_historiu():
@@ -136,7 +139,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response(json.dumps({"status": "ONLINE", "mode": "FULL_PRO 6.1.9 ⚡"}, indent=4), mimetype='application/json')
+    return Response(json.dumps({"status": "ONLINE", "mode": "ASYNC_PRO 6.2.0 ⚡"}, indent=4), mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
