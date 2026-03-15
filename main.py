@@ -1,4 +1,4 @@
-# build v1.6
+# build v1.7
 from flask import Flask, Response
 import requests
 import os
@@ -21,55 +21,68 @@ def whale_tracker():
         
         meta = tx_detail["result"]["meta"]
         zmeny_tokenov = []
+        je_to_velryba = False # 🛑 Nas novy filter
         
         if "postTokenBalances" in meta:
             for token in meta["postTokenBalances"]:
                 mint_adresa = token.get("mint")
                 zostatok = token["uiTokenAmount"]["uiAmount"]
                 
-                # 🧮 MATEMATIKA A LOGIKA PRE TRUST SCORE
+                if not zostatok: continue
+                
+                # 🧮 LOGIKA PRE TRUST SCORE A VELRYBY
                 skore = 50
                 riziko = "Stredne"
                 
-                # Pravidlo 1: Je to Wrapped SOL? (Zlaty standard)
+                # Zlaty standard 1: Wrapped SOL
                 if mint_adresa == "So11111111111111111111111111111111111111112":
                     skore = 100
-                    riziko = "Ziadne (Nativny Token)"
-                # Pravidlo 2: Obrovske mnozstva casto znamenaju shitcoin/memecoin
-                elif zostatok and zostatok > 1000000:
+                    riziko = "Ziadne (SOL)"
+                    if zostatok >= 50: je_to_velryba = True # 50 SOL je zhruba $10,000+
+                        
+                # Zlaty standard 2: USDC (Stablecoin)
+                elif mint_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
+                    skore = 100
+                    riziko = "Ziadne (USDC)"
+                    if zostatok >= 10000: je_to_velryba = True # $10,000
+                    
+                # Hype/Memecoin s obrovskym mnozstvom
+                elif zostatok > 1000000:
                     skore = 20
-                    riziko = "Vysoke (Hype/Rug moznost)"
-                # Pravidlo 3: Neznamy token so standardnym mnozstvom
+                    riziko = "Vysoke (Hype/Rug)"
                 else:
                     skore = 65
-                    riziko = "Mierne (Nutny hlbsi audit)"
+                    riziko = "Mierne"
                     
-                trust_score = {
-                    "skore_bezpecnosti_0_100": skore,
-                    "riziko_podvodu": riziko
-                }
-                
                 zmeny_tokenov.append({
                     "token_adresa": mint_adresa,
                     "zostatok": zostatok,
-                    "audit": trust_score
+                    "audit": {"skore_bezpecnosti": skore, "riziko": riziko}
                 })
         
-        # Vystupne data
-        vystup = {
-            "api_status": "🟢 ONLINE - OMNI ORACLE",
-            "typ_signalu": "SMART_MONEY_TRACKER",
-            "transakcia": latest_tx,
-            "detegovane_aktiva": zmeny_tokenov
-        }
+        # ⚖️ ROZHODOVACÍ STROM FILTRA
+        if not je_to_velryba:
+            odpoved = {
+                "api_status": "🟡 CAKAM NA VELRYBU", 
+                "filter": "Nastaveny na > $10,000", 
+                "transakcia": latest_tx, 
+                "sprava": "Posledna transakcia je len drobny sum."
+            }
+        else:
+            odpoved = {
+                "api_status": "🟢 ONLINE - OMNI ORACLE",
+                "typ_signalu": "SMART_MONEY_TRACKER 🐋",
+                "transakcia": latest_tx,
+                "detegovane_aktiva": zmeny_tokenov
+            }
         
-        # 🧹 FORMATOVANIE PRE KRASNY VZHLAD
-        krasny_json = json.dumps(vystup, indent=4, ensure_ascii=False)
-        return Response(krasny_json, mimetype='application/json')
+        # 🧹 FORMATOVANIE A OPRAVA EMOJIS (UTF-8)
+        krasny_json = json.dumps(odpoved, indent=4, ensure_ascii=False)
+        return Response(krasny_json.encode('utf-8'), mimetype='application/json; charset=utf-8')
         
     except Exception as e:
         chyba = {"api_status": "🔴 CHYBA SERVERA", "detail": str(e)}
-        return Response(json.dumps(chyba, indent=4), mimetype='application/json')
+        return Response(json.dumps(chyba, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
