@@ -1,6 +1,2 @@
-fastapi
-uvicorn
-sqlmodel
-psycopg2-binary
-python-multipart
-supabase
+requests
+flask
