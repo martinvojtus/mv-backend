@@ -1,8 +1,9 @@
-# build 6.1.4
+# build 6.1.5
 from flask import Flask, Response, request
 import requests
 import os
 import json
+import sys # Pridané pre okamžitý výpis logov
 from datetime import datetime, timedelta
 import openai
 from supabase import create_client, Client
@@ -22,6 +23,11 @@ supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Pomocná funkcia na logovanie, ktoré hneď uvidíš v Renderi
+def log_now(msg):
+    print(msg, flush=True)
+    sys.stdout.flush()
+
 def over_heslo():
     return (request.headers.get("X-API-Key") or request.args.get("api_key")) == NASE_API_HESLO
 
@@ -30,7 +36,7 @@ def posli_tg_spravu(kanal, text):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": kanal, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=5)
-    except: pass
+    except Exception as e: log_now(f"❌ TG Error: {e}")
 
 def get_market_data(mint):
     if not mint: return {"symbol": "ERR", "price": 0, "mc": 0, "liq": 0}
@@ -46,7 +52,7 @@ def get_market_data(mint):
                 "mc": float(p.get("fdv", 0) or p.get("marketCap", 0)),
                 "liq": float(p.get("liquidity", {}).get("usd", 0))
             }
-    except: pass
+    except Exception as e: log_now(f"❌ Dex Error: {e}")
     return {"symbol": str(mint)[:4].upper(), "price": 0, "mc": 0, "liq": 0}
 
 @app.route('/webhook', methods=['POST'])
@@ -54,8 +60,7 @@ def handle_webhook():
     if not over_heslo(): return "Unauthorized", 401
     data = request.json
     
-    # 📡 Heartbeat Log pre Render
-    print(f"📡 Webhook received at {datetime.utcnow()} - Txs: {len(data) if data else 0}")
+    log_now(f"📡 WEBHOOK IN: Received {len(data) if data else 0} txs")
 
     if not data or not isinstance(data, list): return "OK", 200
 
@@ -70,10 +75,11 @@ def handle_webhook():
         amount = abs(float(events.get("tokenInAmount", 0) or events.get("tokenOutAmount", 0)))
         val = amount * m_data["price"]
         
-        # 🔍 Debug log
-        print(f"🔍 Checking: {m_data['symbol']} | Value: ${val:,.0f} | Price: {m_data['price']}")
+        # TOTO UVIDÍŠ V LOGOCH
+        log_now(f"🔍 CHECK: {m_data['symbol']} | Val: ${val:,.0f} | Price: {m_data['price']}")
 
-        if m_data["price"] == 0 or val < 2000: continue
+        # DOČASNÝ TESTOVACÍ FILTER (100 $), aby sme videli pohyb
+        if m_data["price"] == 0 or val < 100: continue
 
         impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
         tx_sig = tx.get("signature")
@@ -81,54 +87,26 @@ def handle_webhook():
         
         try:
             supabase.table('velryby_v2').insert({"transakcia": tx_sig, "token": mint, "suma": amount, "ai_audit": audit_str}).execute()
-        except: pass
+            log_now(f"✅ DB SAVED: {m_data['symbol']} ${val:,.0f}")
+        except Exception as e: log_now(f"❌ DB Error: {e}")
 
-        ten_mins_ago = (datetime.utcnow() - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        recent = supabase.table('velryby_v2').select("ai_audit").eq("token", mint).gt("created_at", ten_mins_ago).execute().data
-        total_vol = sum(float(r['ai_audit'].split('$')[1].split(' |')[0].replace(',', '')) for r in recent if '$' in r.get('ai_audit', ''))
-
-        if val >= 50000 or impact >= 1.0 or (total_vol >= 100000 and len(recent) >= 2):
-            msg_type = "🐋 SINGLE WHALE" if val >= 50000 else "🔥 HIGH IMPACT"
-            if total_vol >= 100000 and val < 50000: msg_type = "🕵️‍♂️ STEALTH ACCUMULATION"
-
-            msg = (f"🚨 <b>{msg_type}</b>\n\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}\n"
-                   f"📊 <b>Impact:</b> {impact:.2f}% of MC\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>View Chart</a>")
+        # Prah pre správy (znížený na 100 pre test)
+        if val >= 100:
+            msg = f"🧪 <b>TEST ALERT</b>\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}"
             posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
-            if total_vol >= 150000 or (impact >= 2.0 and val > 10000):
-                analyze_vip(mint, m_data, val, total_vol, impact, len(recent))
     return "OK", 200
-
-def analyze_vip(mint, m_data, value, total_vol, impact, count):
-    if not OPENAI_API_KEY: return
-    try:
-        openai.api_key = OPENAI_API_KEY
-        prompt = (f"Analyze {m_data['symbol']} (MC: ${m_data['mc']:,.0f}). Buy: ${value:,.0f}. Vol: ${total_vol:,.0f}. Impact: {impact:.2f}%. "
-                  "Act as a ruthless whale tracker. Use 3 lines: 🔥 Opinion, 🎯 Action, 💡 Reason. Be bold.")
-        ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=100)
-        analysis = ai_res.choices[0].message.content.strip()
-        try: supabase.table('signaly').insert({"token": mint, "ai_analyza": analysis}).execute()
-        except: pass
-        vip_msg = (f"👑 <b>VIP INSIDER SIGNAL</b> 👑\n\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Flow:</b> ${total_vol:,.0f}\n\n"
-                   f"🤖 <b>AI Intel:</b>\n{analysis}\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>Trade Now</a>")
-        posli_tg_spravu(TG_KANAL_VIP, vip_msg)
-    except: pass
 
 @app.route('/')
 def status():
-    return Response(json.dumps({"status": "ONLINE", "mode": "FIXED 6.1.4 ⚡"}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+    log_now("🌐 Status page hit")
+    return Response(json.dumps({"status": "ONLINE", "mode": "TEST_LOGGING 6.1.5"}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
 
 @app.route('/historia')
 def ukaz_historiu():
     if not over_heslo(): return "Unauthorized", 401
     res = supabase.table('velryby_v2').select("*").order("id", desc=True).limit(50).execute()
     return Response(json.dumps({"saved_whales": res.data}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
-
-@app.route('/signaly')
-def ukaz_signaly():
-    if not over_heslo(): return "Unauthorized", 401
-    res = supabase.table('signaly').select("*").order("id", desc=True).limit(20).execute()
-    return Response(json.dumps({"vip_signals": res.data}, indent=4, ensure_ascii=False), mimetype='application/json; charset=utf-8')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
