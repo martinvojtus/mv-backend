@@ -1,4 +1,4 @@
-# build v2.0
+# build v5.0.6
 from flask import Flask, Response, request
 import requests
 import os
@@ -37,8 +37,7 @@ def posli_tg_spravu(kanal, text):
     except: pass
 
 def zisti_dex_info(token_adresa):
-    if token_adresa == "So11111111111111111111111111111111111111112": return "SOL", 0, 10000000
-    if token_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": return "USDC", 1, 10000000
+    if token_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": return "USDC", 1.0, 10000000
     try:
         res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{token_adresa}").json()
         if res.get("pairs"):
@@ -71,21 +70,25 @@ def lov_velryb():
                             acc_idx = post.get("accountIndex")
                             zostatok_pre = next((p["uiTokenAmount"]["uiAmount"] for p in pre_b if p.get("accountIndex") == acc_idx), 0) or 0
                             rozdiel = zostatok_post - zostatok_pre
+                            
                             if abs(rozdiel) < 1: continue 
                             
-                            akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             symbol, cena, likvidita = zisti_dex_info(mint)
                             hodnota_usd = abs(rozdiel) * cena
                             
-                            # Logika pre databazu
+                            # 🛑 TVRDÝ FILTER: Iba nákupy/predaje nad 10 000 $ 
+                            if cena > 0 and hodnota_usd < 10000: continue
+                            if cena == 0 and abs(rozdiel) < 500000: continue # Pre úplne nové mince bez ceny berieme len masívne presuny
+                            
+                            akcia = "🟢 BUY" if rozdiel > 0 else "🔴 SELL"
                             riziko_en = "⚠️ High Risk" if likvidita < 10000 else "✅ Safe"
                             profi_data = f"{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')} | {akcia} | Token: {symbol} | Value: ${hodnota_usd:.2f} | Liquidity: ${likvidita:.2f}"
+                            
                             supabase.table('velryby_v2').insert({"transakcia": latest_tx, "token": mint, "suma": abs(rozdiel), "ai_audit": profi_data}).execute()
                             
-                            # 📢 Správa pre laikov (Anglicky do Telegramu)
                             if rozdiel > 0:
                                 tg_riziko = "⚠️ Warning, new unverified coin!" if likvidita < 10000 else "✅ Safe (healthy liquidity pool)"
-                                tg_sprava = f"🚨 <b>MASSIVE WHALE BUY!</b> 🚨\n\n🪙 <b>Coin:</b> {symbol}\n💸 <b>Invested:</b> ${hodnota_usd:,.0f}\n💧 <b>Safety:</b> {tg_riziko}\n\n📝 <b>Quick Summary:</b>\nA massive whale just bet a fortune that {symbol} is going up. If you want to follow their lead, click the link below.\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>📈 View Chart & Buy Here</a>"
+                                tg_sprava = f"🚨 <b>MASSIVE WHALE BUY!</b> 🚨\n\n🪙 <b>Coin:</b> {symbol}\n💸 <b>Invested:</b> ${hodnota_usd:,.0f}\n💧 <b>Safety:</b> {tg_riziko}\n\n📝 <b>Quick Summary:</b>\nA massive whale just bet heavily that {symbol} is going up. If you want to follow their lead, click the link below.\n\n🔗 <a href='https://dexscreener.com/solana/{mint}'>📈 View Chart & Buy Here</a>"
                                 posli_tg_spravu(TG_KANAL_ZAKLAD, tg_sprava)
         except: pass
         time.sleep(15)
@@ -109,16 +112,14 @@ def ai_radar():
                         symbol, _, _ = zisti_dex_info(token)
                         openai.api_key = OPENAI_API_KEY
                         
-                        # 💥 Anglický "Idiot-Proof" príkaz pre AI
-                        prompt = f"You are a ruthless crypto expert. 3 whales just simultaneously bought the Solana coin {symbol}. Skip the boring warnings. Answer exactly in this format for Telegram:\n🔥 Opinion: [Your take]\n🎯 Action: [BUY / WATCH / STAY AWAY]\n💡 Reason: [1 short sentence why]"
+                        prompt = f"You are a ruthless crypto expert. 3 whales just simultaneously bought the Solana coin {symbol} (each over $10,000). Skip the boring warnings. Answer exactly in this format for Telegram:\n🔥 Opinion: [Your take]\n🎯 Action: [BUY / WATCH / STAY AWAY]\n💡 Reason: [1 short sentence why]"
                         
                         ai_res = openai.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], max_tokens=150)
                         signal_text = ai_res.choices[0].message.content.strip()
                         
                         supabase.table('signaly').insert({"cas": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'), "token": token, "ai_analyza": f"🚨 VIP SIGNAL [{symbol}]:\n{signal_text}"}).execute()
                         
-                        # 🚨 Správa do VIP (Anglicky)
-                        vip_sprava = f"👑 <b>VIP AI SIGNAL: WHALE SWARM!</b> 👑\n\n🪙 <b>Coin:</b> {symbol}\n👀 <b>What's happening:</b> Several whales bought this coin at the exact same time. The radar detected an anomaly.\n\n🤖 <b>AI Advice:</b>\n{signal_text}\n\n🔗 <a href='https://dexscreener.com/solana/{token}'>📈 View on DexScreener</a>"
+                        vip_sprava = f"👑 <b>VIP AI SIGNAL: WHALE SWARM!</b> 👑\n\n🪙 <b>Coin:</b> {symbol}\n👀 <b>What's happening:</b> Several whales bought this coin at the exact same time with HUGE volume (+$10k each). The radar detected an anomaly.\n\n🤖 <b>AI Advice:</b>\n{signal_text}\n\n🔗 <a href='https://dexscreener.com/solana/{token}'>📈 View on DexScreener</a>"
                         posli_tg_spravu(TG_KANAL_VIP, vip_sprava)
         except: pass
 
@@ -129,7 +130,7 @@ threading.Thread(target=ai_radar, daemon=True).start()
 @app.route('/')
 def status():
     if not over_heslo(): return Response(json.dumps({"error": "Unauthorized."}, indent=4).encode('utf-8'), status=401, mimetype='application/json')
-    return Response(json.dumps({"api_status": "ONLINE", "mode": "B2C TELEGRAM GLOBAL 🌍"}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+    return Response(json.dumps({"api_status": "ONLINE", "mode": "B2C TELEGRAM 10k$ FILTER 🌍"}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 @app.route('/historia')
 def ukaz_historiu():
