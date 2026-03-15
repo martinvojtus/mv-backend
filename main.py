@@ -1,4 +1,4 @@
-# build 6.1.7
+# build 6.1.8
 from flask import Flask, Response, request
 import requests
 import os
@@ -34,13 +34,11 @@ def posli_tg_spravu(kanal, text):
     if not TG_BOT_TOKEN or not kanal: return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": kanal, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try: requests.post(url, json=payload, timeout=10)
+    try: requests.post(url, json=payload, timeout=5)
     except: pass
 
 def get_market_data(mint):
     if not mint: return {"symbol": "ERR", "price": 0, "mc": 1}
-    if mint == "So11111111111111111111111111111111111111112":
-        return {"symbol": "SOL", "price": 150.0, "mc": 70000000000}
     try:
         res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}", timeout=5).json()
         if res.get("pairs"):
@@ -60,22 +58,24 @@ def handle_webhook():
     log_now(f"📡 WEBHOOK START: Received {len(data) if data else 0} txs")
 
     for tx in data:
-        swaps = tx.get("events", {}).get("swap")
-        if not swaps: continue
-        if not isinstance(swaps, list): swaps = [swaps]
-
-        for s in swaps:
-            t_in, t_out = s.get("tokenInMint"), s.get("tokenOutMint")
-            mint = t_in if t_in != "So11111111111111111111111111111111111111112" else t_out
-            if not mint: continue
+        # Hľadáme priamo v tokenTransfers (najspoľahlivejší spôsob)
+        transfers = tx.get("tokenTransfers", [])
+        
+        for t in transfers:
+            mint = t.get("mint")
+            # Ignorujeme čistý SOL, chceme vidieť altcoiny/memecoiny
+            if not mint or mint == "So11111111111111111111111111111111111111112":
+                continue
+                
+            amount = float(t.get("tokenAmount", 0))
+            if amount <= 0: continue
 
             m_data = get_market_data(mint)
-            amount = abs(float(s.get("tokenInAmount", 0) or s.get("tokenOutAmount", 0)))
             val = amount * m_data["price"]
             
             log_now(f"🔍 CHECK: {m_data['symbol']} | Val: ${val:,.0f} | Price: {m_data['price']}")
 
-            if m_data["price"] > 0 and val >= 50: # Test filter 50$
+            if m_data["price"] > 0 and val >= 50: # 🧪 TEST FILTER 50$
                 impact = (val / m_data["mc"] * 100) if m_data["mc"] > 0 else 0
                 tx_sig = tx.get("signature")
                 audit_str = f"VALUE: ${val:,.0f} | MC: ${m_data['mc']:,.0f} | IMPACT: {impact:.2f}%"
@@ -83,14 +83,13 @@ def handle_webhook():
                 try: supabase.table('velryby_v2').insert({"transakcia": tx_sig, "token": mint, "suma": amount, "ai_audit": audit_str}).execute()
                 except: pass
 
-                msg = f"🧪 <b>LIVE TEST</b>\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Buy:</b> ${val:,.0f}"
+                msg = f"🧪 <b>LIVE TEST</b>\n🪙 <b>Token:</b> {m_data['symbol']}\n💰 <b>Value:</b> ${val:,.0f}"
                 posli_tg_spravu(TG_KANAL_ZAKLAD, msg)
 
     return "OK", 200
 
 @app.route('/test-tg')
 def test_tg():
-    log_now("🛠️ Manual TG Test triggered...")
     posli_tg_spravu(TG_KANAL_ZAKLAD, "✅ <b>System check:</b> Bot a kanál sú prepojené!")
     return "Test správa odoslaná!"
 
@@ -108,7 +107,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response(json.dumps({"status": "ONLINE", "mode": "FULL 6.1.7 ⚡"}, indent=4), mimetype='application/json')
+    return Response(json.dumps({"status": "ONLINE", "mode": "FIXED_PARSER 6.1.8 ⚡"}, indent=4), mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
