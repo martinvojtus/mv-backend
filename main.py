@@ -1,10 +1,20 @@
-# build v1.7
+# build v5.0.4
 from flask import Flask, Response
 import requests
 import os
 import json
+import sqlite3
 
 app = Flask(__name__)
+
+# 🛠️ Vytvorenie databazy
+def init_db():
+    conn = sqlite3.connect('whales.db')
+    conn.execute('CREATE TABLE IF NOT EXISTS ulovene_velryby (id INTEGER PRIMARY KEY, transakcia TEXT, token TEXT, suma REAL)')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 @app.route('/')
 def whale_tracker():
@@ -21,7 +31,7 @@ def whale_tracker():
         
         meta = tx_detail["result"]["meta"]
         zmeny_tokenov = []
-        je_to_velryba = False # 🛑 Nas novy filter
+        je_to_velryba = False
         
         if "postTokenBalances" in meta:
             for token in meta["postTokenBalances"]:
@@ -30,59 +40,45 @@ def whale_tracker():
                 
                 if not zostatok: continue
                 
-                # 🧮 LOGIKA PRE TRUST SCORE A VELRYBY
-                skore = 50
-                riziko = "Stredne"
+                skore, riziko = 50, "Mierne"
                 
-                # Zlaty standard 1: Wrapped SOL
-                if mint_adresa == "So11111111111111111111111111111111111111112":
-                    skore = 100
-                    riziko = "Ziadne (SOL)"
-                    if zostatok >= 50: je_to_velryba = True # 50 SOL je zhruba $10,000+
-                        
-                # Zlaty standard 2: USDC (Stablecoin)
-                elif mint_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
-                    skore = 100
-                    riziko = "Ziadne (USDC)"
-                    if zostatok >= 10000: je_to_velryba = True # $10,000
-                    
-                # Hype/Memecoin s obrovskym mnozstvom
+                if mint_adresa == "So11111111111111111111111111111111111111112" and zostatok >= 50:
+                    skore, riziko, je_to_velryba = 100, "Ziadne (SOL)", True
+                elif mint_adresa == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" and zostatok >= 10000:
+                    skore, riziko, je_to_velryba = 100, "Ziadne (USDC)", True
                 elif zostatok > 1000000:
-                    skore = 20
-                    riziko = "Vysoke (Hype/Rug)"
-                else:
-                    skore = 65
-                    riziko = "Mierne"
+                    skore, riziko = 20, "Vysoke (Hype/Rug)"
                     
-                zmeny_tokenov.append({
-                    "token_adresa": mint_adresa,
-                    "zostatok": zostatok,
-                    "audit": {"skore_bezpecnosti": skore, "riziko": riziko}
-                })
+                zmeny_tokenov.append({"token_adresa": mint_adresa, "zostatok": zostatok, "audit": {"skore": skore, "riziko": riziko}})
+                
+                # 💾 Ulozenie do databazy, ak sme chytili velrybu
+                if je_to_velryba:
+                    conn = sqlite3.connect('whales.db')
+                    conn.execute("INSERT INTO ulovene_velryby (transakcia, token, suma) VALUES (?, ?, ?)", (latest_tx, mint_adresa, zostatok))
+                    conn.commit()
+                    conn.close()
         
-        # ⚖️ ROZHODOVACÍ STROM FILTRA
         if not je_to_velryba:
-            odpoved = {
-                "api_status": "🟡 CAKAM NA VELRYBU", 
-                "filter": "Nastaveny na > $10,000", 
-                "transakcia": latest_tx, 
-                "sprava": "Posledna transakcia je len drobny sum."
-            }
+            odpoved = {"api_status": "🟡 CAKAM NA VELRYBU", "transakcia": latest_tx}
         else:
-            odpoved = {
-                "api_status": "🟢 ONLINE - OMNI ORACLE",
-                "typ_signalu": "SMART_MONEY_TRACKER 🐋",
-                "transakcia": latest_tx,
-                "detegovane_aktiva": zmeny_tokenov
-            }
+            odpoved = {"api_status": "🟢 ULOZENE DO DATABAZY", "transakcia": latest_tx, "aktiva": zmeny_tokenov}
         
-        # 🧹 FORMATOVANIE A OPRAVA EMOJIS (UTF-8)
-        krasny_json = json.dumps(odpoved, indent=4, ensure_ascii=False)
-        return Response(krasny_json.encode('utf-8'), mimetype='application/json; charset=utf-8')
+        return Response(json.dumps(odpoved, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
         
     except Exception as e:
-        chyba = {"api_status": "🔴 CHYBA SERVERA", "detail": str(e)}
-        return Response(json.dumps(chyba, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
+        return Response(json.dumps({"chyba": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
+
+# 📜 Novy endpoint na zobrazenie historie
+@app.route('/historia')
+def ukaz_historiu():
+    try:
+        conn = sqlite3.connect('whales.db')
+        kurzor = conn.execute("SELECT * FROM ulovene_velryby ORDER BY id DESC LIMIT 20")
+        zaznamy = [{"id": row[0], "transakcia": row[1], "token": row[2], "suma": row[3]} for row in kurzor.fetchall()]
+        conn.close()
+        return Response(json.dumps({"ulozene_velryby": zaznamy}, indent=4, ensure_ascii=False).encode('utf-8'), mimetype='application/json; charset=utf-8')
+    except Exception as e:
+        return Response(json.dumps({"chyba": "Databaza je zatial prazdna alebo nastal problem.", "detail": str(e)}, indent=4).encode('utf-8'), mimetype='application/json; charset=utf-8')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
