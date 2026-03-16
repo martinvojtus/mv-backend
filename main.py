@@ -1,4 +1,4 @@
-# build 6.4.4
+# build 6.4.5
 from flask import Flask, Response, request, render_template_string
 import requests
 import os
@@ -59,33 +59,47 @@ def posli_tg_spravu(kanal, text):
     try: requests.post(url, json=payload, timeout=5)
     except: pass
 
-def get_btc_data():
+def get_macro_data():
+    data = {
+        "price": 0, "change_pct": 0, "volume": 0, 
+        "btc_dominance": 0, "total_mcap": 0
+    }
     try:
-        # 🌐 KuCoin API + Maskovanie (tvárime sa ako Chrome prehliadač)
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        res = requests.get("https://api.kucoin.com/api/v1/market/stats?symbol=BTC-USDT", headers=headers, timeout=10).json()
-        
+        # 🌐 KuCoin pre presnú cenu BTC
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get("https://api.kucoin.com/api/v1/market/stats?symbol=BTC-USDT", headers=headers, timeout=5).json()
         if res.get("code") == "200000" and "data" in res:
-            data = res["data"]
-            return {
-                "price": float(data.get("last", 0)),
-                "change_pct": round(float(data.get("changeRate", 0)) * 100, 2),
-                "volume": float(data.get("volValue", 0))
-            }
-        return None
+            data["price"] = float(res["data"].get("last", 0))
+            data["change_pct"] = round(float(res["data"].get("changeRate", 0)) * 100, 2)
+            data["volume"] = float(res["data"].get("volValue", 0))
+            
+        # 🌐 CoinGecko pre Global Macro údaje (Dominancia a Market Cap)
+        cg = requests.get("https://api.coingecko.com/api/v3/global", timeout=5).json()
+        if "data" in cg:
+            data["btc_dominance"] = round(cg["data"]["market_cap_percentage"].get("btc", 0), 2)
+            data["total_mcap"] = cg["data"]["total_market_cap"].get("usd", 0)
     except Exception as e:
         print(f"API Chyba: {e}", flush=True)
-        return None
+    return data
 
-def analyze_btc(btc_data, cas_teraz):
+def analyze_btc(macro, cas_teraz):
     if not OPENAI_API_KEY: return
     try:
         openai.api_key = OPENAI_API_KEY
-        prompt = (f"Bitcoin is at ${btc_data['price']:,.0f}. 24h Change: {btc_data['change_pct']}%. Vol: ${btc_data['volume']:,.0f}. "
-                  "Act as a pro crypto analyst. Provide two texts separated exactly by the word 'SPLITTER'.\n"
-                  "Text 1 (Free Teaser before SPLITTER): 2 short sentences in Slovak summarizing market vibe and hinting at next move.\n"
-                  "SPLITTER\n"
-                  "Text 2 (VIP after SPLITTER): 4 concise bullet points in Slovak with emojis: 1. 🎯 Kľúčové levely (Support/Resistance). 2. 📊 Pravdepodobnosť (Next move odds in %). 3. 🏦 Inštitúcie (Current assumed ETF/MicroStrategy sentiment). 4. 💡 Akcia (Clear macro plan).")
+        prompt = (
+            f"BTC Price: ${macro['price']:,.0f} | 24h Change: {macro['change_pct']}% | "
+            f"24h Vol: ${macro['volume']:,.0f} | BTC Dominance: {macro['btc_dominance']}% | "
+            f"Global Market Cap: ${macro['total_mcap']:,.0f}\n\n"
+            "Act as a top-tier institutional crypto analyst. Write STRICTLY IN ENGLISH.\n"
+            "Provide two sections separated exactly by '===SPLIT==='.\n\n"
+            "Section 1: 2 short, engaging English sentences summarizing the macro vibe and hinting at the next move. Do not use words like 'Teaser' or 'Section'.\n"
+            "===SPLIT===\n"
+            "Section 2: 4 concise bullet points in English using emojis:\n"
+            "1. 🎯 Key Levels (Support/Resistance)\n"
+            "2. 📊 Probability (Next move odds in %)\n"
+            "3. 🏦 Institutional & ETF Flows (Estimate current sentiment based on volume and dominance)\n"
+            "4. 💡 Action (Clear macro plan)"
+        )
         
         ai_res = openai.chat.completions.create(
             model="gpt-3.5-turbo", 
@@ -95,32 +109,38 @@ def analyze_btc(btc_data, cas_teraz):
         
         ai_text = ai_res.choices[0].message.content.strip()
         
-        if "SPLITTER" in ai_text:
-            parts = ai_text.split("SPLITTER")
-            free_text = parts[0].strip().replace("<", "").replace(">", "")
-            vip_text = parts[1].strip().replace("<", "").replace(">", "")
+        # Očistenie a rozdelenie
+        if "===SPLIT===" in ai_text:
+            parts = ai_text.split("===SPLIT===")
+            free_text = parts[0].replace("Section 1:", "").strip()
+            vip_text = parts[1].replace("Section 2:", "").strip()
         else:
-            free_text = "Analýza trhu sa spracúva, ostaňte naladení..."
-            vip_text = ai_text.replace("<", "").replace(">", "")
+            free_text = "Market analysis processing..."
+            vip_text = ai_text
 
-        try: supabase.table('signaly').insert({"token": "BTC", "ai_analyza": f"💰 Cena: ${btc_data['price']:,.0f} | 📈 24h: {btc_data['change_pct']}%\n\n{vip_text}"}).execute()
+        # 💾 Uloženie do DB
+        try: supabase.table('signaly').insert({"token": "BTC", "ai_analyza": f"💰 Price: ${macro['price']:,.0f} | 📈 24h: {macro['change_pct']}%\n\n{vip_text}"}).execute()
         except: pass
         
+        # 💎 VIP Telegram Správa (Teraz s Makro dátami)
         vip_msg = (f"👑 <b>BTC MACRO UPDATE</b> 👑\n"
-                   f"⏱️ <b>Čas:</b> {cas_teraz} UTC\n\n"
-                   f"🪙 <b>Aktívum:</b> Bitcoin (BTC)\n"
-                   f"💵 <b>Cena:</b> ${btc_data['price']:,.0f}\n"
-                   f"📊 <b>Zmena (24h):</b> {btc_data['change_pct']}%\n\n"
+                   f"⏱️ <b>Time:</b> {cas_teraz} UTC\n\n"
+                   f"🪙 <b>Asset:</b> Bitcoin (BTC)\n"
+                   f"💵 <b>Price:</b> ${macro['price']:,.0f}\n"
+                   f"📊 <b>24h Change:</b> {macro['change_pct']}%\n"
+                   f"📈 <b>BTC Dominance:</b> {macro['btc_dominance']}%\n"
+                   f"🌍 <b>Global Cap:</b> ${(macro['total_mcap']/1e12):.2f}T\n\n"
                    f"🧠 <b>PRO INTEL:</b>\n{vip_text}")
         posli_tg_spravu(TG_KANAL_VIP, vip_msg)
 
+        # 🎣 Free Telegram Správa
         free_msg = (f"🌐 <b>MARKET PULSE</b>\n"
-                    f"⏱️ <b>Čas:</b> {cas_teraz} UTC\n\n"
-                    f"🪙 <b>Bitcoin:</b> ${btc_data['price']:,.0f}\n"
-                    f"📈 <b>Trend (24h):</b> {btc_data['change_pct']}%\n"
-                    f"🌊 <b>Objem:</b> ${btc_data['volume']:,.0f}\n\n"
-                    f"👀 <b>Náznak pohybu:</b>\n{free_text}\n\n"
-                    f"👑 <i>Presné levely, pravdepodobnosti a kroky veľkých hráčov nájdeš vo VIP.</i>")
+                    f"⏱️ <b>Time:</b> {cas_teraz} UTC\n\n"
+                    f"🪙 <b>Bitcoin:</b> ${macro['price']:,.0f}\n"
+                    f"📈 <b>24h Trend:</b> {macro['change_pct']}%\n"
+                    f"🌊 <b>Volume:</b> ${macro['volume']:,.0f}\n\n"
+                    f"👀 <b>Market Hint:</b>\n{free_text}\n\n"
+                    f"👑 <i>Exact levels, probabilities, and ETF tracking available in VIP.</i>")
         posli_tg_spravu(TG_KANAL_ZAKLAD, free_msg)
 
     except Exception as e:
@@ -130,19 +150,19 @@ def analyze_btc(btc_data, cas_teraz):
 def trigger_btc_radar():
     if not over_heslo(): return "Unauthorized", 401
     
-    btc = get_btc_data()
-    if not btc: return "Chyba API. Zdroj dát je dočasne nedostupný.", 500
+    macro = get_macro_data()
+    if macro['price'] == 0: return "API Error", 500
     
     cas_teraz = datetime.utcnow().strftime('%H:%M:%S')
     
-    tx_id = f"BTC-MACRO-{int(datetime.utcnow().timestamp())}"
-    audit_str = f"📈 24h Zmena: {btc['change_pct']}% | 🌊 24h Objem: ${btc['volume']:,.0f}"
-    try: supabase.table('velryby_v2').insert({"transakcia": tx_id, "token": "BTC", "suma": btc['price'], "ai_audit": audit_str}).execute()
+    tx_id = f"MACRO-{int(datetime.utcnow().timestamp())}"
+    audit_str = f"📈 24h: {macro['change_pct']}% | 👑 DOM: {macro['btc_dominance']}% | 🌍 CAP: ${(macro['total_mcap']/1e12):.2f}T"
+    try: supabase.table('velryby_v2').insert({"transakcia": tx_id, "token": "BTC", "suma": macro['price'], "ai_audit": audit_str}).execute()
     except: pass
 
-    analyze_btc(btc, cas_teraz)
+    analyze_btc(macro, cas_teraz)
 
-    return f"Úspech: BTC Radar spustený pri cene ${btc['price']:,.0f}", 200
+    return f"Success: Analysed at ${macro['price']:,.0f}", 200
 
 @app.route('/historia')
 def ukaz_historiu():
@@ -181,7 +201,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.4 👑"}', mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "GLOBAL_MACRO 6.4.5 🌍"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
