@@ -1,7 +1,8 @@
-# build 6.4.2
+# build 6.4.3
 from flask import Flask, Response, request, render_template_string
 import requests
 import os
+import json
 from datetime import datetime
 import openai
 from supabase import create_client, Client
@@ -54,27 +55,29 @@ def over_heslo():
 
 def posli_tg_spravu(kanal, text):
     if not TG_BOT_TOKEN or not kanal: return
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TG_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": kanal, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=5)
     except: pass
 
 def get_btc_data():
     try:
-        res = requests.get("[https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT](https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT)", timeout=5).json()
+        # 🌐 CoinCap API - neblokuje Render servery z USA!
+        res = requests.get("https://api.coincap.io/v2/assets/bitcoin", timeout=10).json()
+        data = res['data']
         return {
-            "price": float(res.get("lastPrice", 0)),
-            "change_pct": float(res.get("priceChangePercent", 0)),
-            "volume": float(res.get("quoteVolume", 0))
+            "price": float(data.get("priceUsd", 0)),
+            "change_pct": round(float(data.get("changePercent24Hr", 0)), 2),
+            "volume": float(data.get("volumeUsd24Hr", 0))
         }
-    except:
+    except Exception as e:
+        print(f"API Chyba: {e}", flush=True)
         return None
 
 def analyze_btc(btc_data, cas_teraz):
     if not OPENAI_API_KEY: return
     try:
         openai.api_key = OPENAI_API_KEY
-        # Odstránený JSON, nahradený jednoduchým oddeľovačom "SPLITTER"
         prompt = (f"Bitcoin is at ${btc_data['price']:,.0f}. 24h Change: {btc_data['change_pct']}%. Vol: ${btc_data['volume']:,.0f}. "
                   "Act as a pro crypto analyst. Provide two texts separated exactly by the word 'SPLITTER'.\n"
                   "Text 1 (Free Teaser before SPLITTER): 2 short sentences in Slovak summarizing market vibe and hinting at next move.\n"
@@ -89,10 +92,8 @@ def analyze_btc(btc_data, cas_teraz):
         
         ai_text = ai_res.choices[0].message.content.strip()
         
-        # Bezpečné rozseknutie textu
         if "SPLITTER" in ai_text:
             parts = ai_text.split("SPLITTER")
-            # Odstránime nebezpečné HTML značky, ktoré by mohli zraziť Telegram
             free_text = parts[0].strip().replace("<", "").replace(">", "")
             vip_text = parts[1].strip().replace("<", "").replace(">", "")
         else:
@@ -127,7 +128,7 @@ def trigger_btc_radar():
     if not over_heslo(): return "Unauthorized", 401
     
     btc = get_btc_data()
-    if not btc: return "Chyba API", 500
+    if not btc: return "Chyba API. Zdroj dát je dočasne nedostupný.", 500
     
     cas_teraz = datetime.utcnow().strftime('%H:%M:%S')
     
@@ -138,7 +139,7 @@ def trigger_btc_radar():
 
     analyze_btc(btc, cas_teraz)
 
-    return f"Úspech: BTC Radar spustený pri cene ${btc['price']}", 200
+    return f"Úspech: BTC Radar spustený pri cene ${btc['price']:,.0f}", 200
 
 @app.route('/historia')
 def ukaz_historiu():
@@ -177,7 +178,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.2 👑"}', mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.3 👑"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
