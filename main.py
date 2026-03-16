@@ -1,8 +1,7 @@
-# build 6.4.3
+# build 6.4.4
 from flask import Flask, Response, request, render_template_string
 import requests
 import os
-import json
 from datetime import datetime
 import openai
 from supabase import create_client, Client
@@ -62,14 +61,18 @@ def posli_tg_spravu(kanal, text):
 
 def get_btc_data():
     try:
-        # 🌐 CoinCap API - neblokuje Render servery z USA!
-        res = requests.get("https://api.coincap.io/v2/assets/bitcoin", timeout=10).json()
-        data = res['data']
-        return {
-            "price": float(data.get("priceUsd", 0)),
-            "change_pct": round(float(data.get("changePercent24Hr", 0)), 2),
-            "volume": float(data.get("volumeUsd24Hr", 0))
-        }
+        # 🌐 KuCoin API + Maskovanie (tvárime sa ako Chrome prehliadač)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        res = requests.get("https://api.kucoin.com/api/v1/market/stats?symbol=BTC-USDT", headers=headers, timeout=10).json()
+        
+        if res.get("code") == "200000" and "data" in res:
+            data = res["data"]
+            return {
+                "price": float(data.get("last", 0)),
+                "change_pct": round(float(data.get("changeRate", 0)) * 100, 2),
+                "volume": float(data.get("volValue", 0))
+            }
+        return None
     except Exception as e:
         print(f"API Chyba: {e}", flush=True)
         return None
@@ -178,7 +181,7 @@ def ukaz_signaly():
 
 @app.route('/')
 def status():
-    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.3 👑"}', mimetype='application/json')
+    return Response('{"status": "ONLINE", "mode": "PRO_TEASER 6.4.4 👑"}', mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), threaded=True)
